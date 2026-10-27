@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Frame</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+      /* Пунктир с белой обводкой: виден и на тёмном, и на светлом фоне.
+         Окно прозрачно для мыши и исключено из записи */
+      #f {
+        position: fixed;
+        inset: 1px;
+        border: 2px dashed #f03a2e;
+        border-radius: 2px;
+        box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.75), inset 0 0 0 1px rgba(255, 255, 255, 0.75);
+        transition: border-color 0.15s;
+      }
+      #f.paused { border-color: #f59e0b; }
+    </style>
+  </head>
+  <body>
+    <div id="f"></div>
+    <script type="module" src="./frame.ts"></script>
+  </body>
+</html>

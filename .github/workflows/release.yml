@@ -1,0 +1,53 @@
+# Собирает установщик для Windows и публикует его в GitHub Releases.
+# Запускается при пуше тега вида v1.2.3. Версия в теге должна совпадать с версией в tauri.conf.json.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version
+        shell: pwsh
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            Write-Error "Тег ${{ github.ref_name }} не совпадает с версией $version в tauri.conf.json"
+            exit 1
+          }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          cargo fetch --manifest-path src-tauri/Cargo.toml
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: StopPic ${{ github.ref_name }}
+          generate_release_notes: true
+          files: src-tauri/target/release/bundle/nsis/*-setup.exe

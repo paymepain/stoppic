@@ -1,0 +1,60 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "StopPic",
+  "version": "0.4.0",
+  "identifier": "io.github.paymepain.stoppic",
+  "build": {
+    "beforeDevCommand": "npm run vite:dev",
+    "beforeBuildCommand": "npm run vite:build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "withGlobalTauri": false,
+    "security": {
+      "csp": {
+        "default-src": "'self'",
+        "img-src": "'self' blob: data:",
+        "style-src": "'self' 'unsafe-inline'",
+        "script-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost"
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "category": "Utility",
+    "shortDescription": "Скриншотер и рекордер экрана",
+    "copyright": "Copyright (c) 2026 paymepain (https://github.com/paymepain)",
+    "licenseFile": "../LICENSE.txt",
+    "resources": {
+      "THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt",
+      "../LICENSE.txt": "LICENSE.txt"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": [
+          "Russian",
+          "English"
+        ],
+        "displayLanguageSelector": false,
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/installer/header.bmp",
+        "sidebarImage": "icons/installer/sidebar.bmp"
+      }
+    }
+  }
+}
