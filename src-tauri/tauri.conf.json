@@ -47,10 +47,11 @@
       "nsis": {
         "installMode": "currentUser",
         "languages": [
-          "Russian",
-          "English"
+          "English",
+          "Russian"
         ],
-        "displayLanguageSelector": false,
+        "displayLanguageSelector": true,
+        "installerHooks": "installer-hooks.nsh",
         "installerIcon": "icons/icon.ico",
         "headerImage": "icons/installer/header.bmp",
         "sidebarImage": "icons/installer/sidebar.bmp"

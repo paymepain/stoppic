@@ -1,6 +1,6 @@
 import './api'
 import './settings.css'
-import type { HotkeyName, HotkeyResult, SettingsState } from './shared/ipc'
+import type { AudioDevice, HotkeyName, HotkeyResult, SettingsState } from './shared/ipc'
 import { LOGO_SVG, LOGO_VIEWBOX } from './shared/brand'
 import { icon } from './shared/icons'
 
@@ -18,7 +18,7 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls = '', text = ''):
   return e
 }
 
-// ───────────────────────── Сочетания клавиш ─────────────────────────
+// ───────────────────────── Keyboard shortcuts ─────────────────────────
 
 const NAMED_KEYS: Record<string, string> = {
   Space: 'Space', Tab: 'Tab', Enter: 'Return', Backspace: 'Backspace', Delete: 'Delete', Insert: 'Insert',
@@ -28,7 +28,7 @@ const NAMED_KEYS: Record<string, string> = {
   Quote: "'", Comma: ',', Period: '.', Slash: '/', Backquote: '`'
 }
 
-/** Физическая клавиша → имя для Electron. Работает в любой раскладке. */
+/** Physical key → Electron key name. Works in any keyboard layout. */
 function keyName(code: string): string | null {
   if (/^Key[A-Z]$/.test(code)) return code.slice(3)
   if (/^Digit\d$/.test(code)) return code.slice(5)
@@ -104,7 +104,7 @@ function onRecordKey(e: KeyboardEvent): void {
     cancelRecording()
     return
   }
-  if (isModifierCode(e.code)) return // ждём основную клавишу
+  if (isModifierCode(e.code)) return // wait for the main key
   const { accel, needMod } = toAccelerator(e)
   if (needMod) {
     showMsg(s('hkErrMod'))
@@ -122,13 +122,13 @@ function onRecordKey(e: KeyboardEvent): void {
 function startRecording(name: HotkeyName): void {
   if (recording) cancelRecording()
   recording = name
-  window.api.hotkeysPause(true) // иначе текущее сочетание сработает прямо во время записи
+  window.api.hotkeysPause(true) // otherwise the current shortcut would fire while being recorded
   window.addEventListener('keydown', onRecordKey, true)
   window.addEventListener('blur', cancelRecording)
   render()
 }
 
-// ───────────────────────── Разметка ─────────────────────────
+// ───────────────────────── Markup ─────────────────────────
 
 function hotkeyRow(name: HotkeyName): HTMLElement {
   const row = el('div', 'row')
@@ -211,26 +211,41 @@ function selectRow(label: string, options: Array<[string, string]>, value: strin
   return row
 }
 
+/** Audio device list: "Same as Windows", then the devices; a vanished device stays listed until it is changed */
+function deviceRow(label: string, devices: AudioDevice[], value: string, onChange: (v: string) => void): HTMLElement {
+  const options: Array<[string, string]> = [['', s('deviceDefault')], ...devices.map((d): [string, string] => [d.id, d.name])]
+  if (value && !devices.some((d) => d.id === value)) options.push([value, s('deviceMissing')])
+  const row = selectRow(label, options, value, onChange)
+  row.querySelector('select')?.classList.add('wide')
+  return row
+}
+
 function languageRow(): HTMLElement {
   const row = el('div', 'row')
   row.appendChild(el('div', 'lbl', s('language')))
   const sel = el('select')
-  for (const [value, label] of [['auto', s('langAuto')], ['ru', 'Русский'], ['en', 'English']] as const) {
+  for (const [value, label] of [['en', 'English'], ['ru', 'Русский']] as const) {
     const o = el('option', '', label)
     o.value = value
     o.selected = st.settings.language === value
     sel.appendChild(o)
   }
-  sel.addEventListener('change', () => void patch({ language: sel.value as 'auto' | 'ru' | 'en' }))
+  sel.addEventListener('change', () => void patch({ language: sel.value as 'ru' | 'en' }))
   row.appendChild(sel)
   return row
 }
 
 function render(): void {
-  document.documentElement.lang = st.settings.language === 'auto' ? '' : st.settings.language
+  document.documentElement.lang = st.settings.language
 
   const hotkeys = el('div', 'card')
-  hotkeys.append(hotkeyRow('screenshot'), hotkeyRow('record'))
+  hotkeys.append(
+    hotkeyRow('screenshot'),
+    hotkeyRow('screenshotFull'),
+    hotkeyRow('screenshotWindow'),
+    hotkeyRow('record'),
+    hotkeyRow('recordFull')
+  )
 
   const saving = el('div', 'card')
   saving.append(
@@ -241,7 +256,6 @@ function render(): void {
   const general = el('div', 'card')
   general.append(
     toggleRow(s('autoLaunch'), st.settings.autoLaunch, (v) => void patch({ autoLaunch: v })),
-    toggleRow(s('fastStart'), st.settings.fastStart, (v) => void patch({ fastStart: v }), s('fastStartHint')),
     languageRow()
   )
 
@@ -251,7 +265,9 @@ function render(): void {
     selectRow(s('recFps'), [['15', '15'], ['30', '30'], ['60', '60']], String(st.settings.recFps), (v) => void patch({ recFps: Number(v) })),
     toggleRow(s('recCountdown'), st.settings.recCountdown, (v) => void patch({ recCountdown: v })),
     toggleRow(s('recSystemAudio'), st.settings.recSystemAudio, (v) => void patch({ recSystemAudio: v })),
-    toggleRow(s('recMic'), st.settings.recMic, (v) => void patch({ recMic: v }))
+    deviceRow(s('recSysDevice'), st.outputs, st.settings.recSysDevice, (v) => void patch({ recSysDevice: v })),
+    toggleRow(s('recMic'), st.settings.recMic, (v) => void patch({ recMic: v })),
+    deviceRow(s('recMicDevice'), st.mics, st.settings.recMicDevice, (v) => void patch({ recMicDevice: v }))
   )
 
   const msg = el('div', 'msg')
@@ -276,6 +292,9 @@ function render(): void {
     el('div', 'cap', s('secGeneral')), general,
     foot
   )
+  // Reading offsetHeight forces layout, so the measurement is valid right away (#app includes the page padding).
+  // No requestAnimationFrame here: it does not fire while the window is still hidden
+  window.api.settingsFit(app.offsetHeight)
 }
 
 async function init(): Promise<void> {

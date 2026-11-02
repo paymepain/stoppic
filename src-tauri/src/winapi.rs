@@ -1,18 +1,18 @@
-// Мелочи Windows, которых нет в API Tauri.
+// Small Windows bits missing from the Tauri API.
 
-use windows::Win32::Foundation::{HWND, POINT};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_TRANSITIONS_FORCEDISABLED};
+use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS, DWMWA_TRANSITIONS_FORCEDISABLED};
 use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowLongPtrW, SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA,
-    WDA_EXCLUDEFROMCAPTURE, WS_EX_LAYERED,
+    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, IsIconic, SetLayeredWindowAttributes, SetWindowDisplayAffinity,
+    SetWindowLongPtrW, GWL_EXSTYLE, LWA_ALPHA, WDA_EXCLUDEFROMCAPTURE, WS_EX_LAYERED,
 };
 
 fn hwnd(w: &tauri::WebviewWindow) -> Option<HWND> {
     w.hwnd().ok().map(|h| HWND(h.0 as _))
 }
 
-/// Без анимации появления: оверлей возникает мгновенно.
+/// No show animation: the overlay appears instantly.
 pub fn disable_transitions(w: &tauri::WebviewWindow) {
     if let Some(h) = hwnd(w) {
         let on: i32 = 1;
@@ -22,9 +22,9 @@ pub fn disable_transitions(w: &tauri::WebviewWindow) {
     }
 }
 
-/// Прозрачность окна целиком. None возвращает обычное окно.
-/// Скрытое окно WebView2 не отрисовывает, поэтому оверлей показываем прозрачным
-/// и проявляем, когда кадр уже нарисован: иначе мелькнёт чёрная подложка.
+/// Opacity of the whole window. None restores a normal window.
+/// WebView2 doesn't render a hidden window, so the overlay is shown transparent
+/// and revealed once the frame is drawn: otherwise a black backdrop would flash.
 pub fn set_alpha(w: &tauri::WebviewWindow, alpha: Option<u8>) {
     let Some(h) = hwnd(w) else { return };
     unsafe {
@@ -43,7 +43,7 @@ pub fn set_alpha(w: &tauri::WebviewWindow, alpha: Option<u8>) {
     }
 }
 
-/// Панель записи не попадает в запись и скриншоты.
+/// The recording panel is excluded from recordings and screenshots.
 pub fn exclude_from_capture(w: &tauri::WebviewWindow) {
     if let Some(h) = hwnd(w) {
         unsafe {
@@ -52,7 +52,22 @@ pub fn exclude_from_capture(w: &tauri::WebviewWindow) {
     }
 }
 
-/// HMONITOR монитора, в котором лежит точка (физические пиксели).
+/// HMONITOR of the monitor containing the point (physical pixels).
 pub fn monitor_at(x: i32, y: i32) -> *mut std::ffi::c_void {
     unsafe { MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST).0 }
+}
+
+/// Bounds of the active window in physical pixels: (left, top, right, bottom).
+/// DWM returns the visible frame without the invisible margins Windows adds around windows.
+pub fn foreground_window_rect() -> Option<(i32, i32, i32, i32)> {
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.0.is_null() || IsIconic(h).as_bool() {
+            return None;
+        }
+        let mut r = RECT::default();
+        let ok = DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &mut r as *mut RECT as _, std::mem::size_of::<RECT>() as u32).is_ok()
+            || GetWindowRect(h, &mut r).is_ok();
+        (ok && r.right > r.left && r.bottom > r.top).then_some((r.left, r.top, r.right, r.bottom))
+    }
 }

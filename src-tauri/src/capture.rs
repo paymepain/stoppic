@@ -1,4 +1,4 @@
-// Снимок области: захват всех мониторов, оверлей на каждом, итог в буфер/файл/закрепление.
+// Region screenshot: capture all monitors, an overlay on each, result goes to clipboard/file/pin.
 
 use crate::i18n::t;
 use crate::{files, notify, pin, record, settings, shortcuts};
@@ -19,7 +19,7 @@ pub enum Mode {
     Record,
 }
 
-/// Монитор в физических пикселях
+/// Monitor in physical pixels
 #[derive(Clone, Copy, PartialEq)]
 pub struct Monitor {
     pub x: i32,
@@ -30,14 +30,14 @@ pub struct Monitor {
 }
 
 impl Monitor {
-    /// Размер окна оверлея в CSS-пикселях
+    /// Overlay window size in CSS pixels
     pub fn css_w(&self) -> f64 {
         self.w as f64 / self.scale
     }
     pub fn css_h(&self) -> f64 {
         self.h as f64 / self.scale
     }
-    fn contains(&self, px: f64, py: f64) -> bool {
+    pub fn contains(&self, px: f64, py: f64) -> bool {
         px >= self.x as f64 && py >= self.y as f64 && px < (self.x + self.w as i32) as f64 && py < (self.y + self.h as i32) as f64
     }
 }
@@ -58,34 +58,34 @@ struct Session {
 
 #[derive(Default)]
 struct State {
-    active: bool, // оверлей открыт или готовится
-    token: u64,   // защита от гонок: каждое закрытие/старт меняет токен
+    active: bool, // overlay is open or being prepared
+    token: u64,   // race guard: every close/start changes the token
     mode: Option<Mode>,
-    sessions: HashMap<String, Session>, // ключ: label окна
+    sessions: HashMap<String, Session>, // key: window label
     shown: usize,
-    ready: HashSet<String>, // окна, страница которых загружена
-    /// Заранее загруженные скрытые окна оверлея, по одному на монитор
+    ready: HashSet<String>, // windows whose page has loaded
+    /// Preloaded hidden overlay windows, one per monitor
     pool: Vec<(Monitor, WebviewWindow)>,
     seq: u64,
     warm_gen: u64,
     quitting: bool,
-    /// Для замера задержки в dev-сборке
+    /// For latency measurement in dev builds
     started: Option<std::time::Instant>,
 }
 
 static ST: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
 
-// Важно: методы окон Tauri ждут главный поток, поэтому их не вызываем, пока держим ST.
+// Important: Tauri window methods wait for the main thread, so never call them while holding ST.
 
 pub fn init() {
-    schedule_warm(1500); // не мешаем запуску приложения
+    schedule_warm(1500); // don't get in the way of app startup
 }
 
 pub fn is_active() -> bool {
     ST.lock().unwrap().active
 }
 
-// ───────────────────────── Захват ─────────────────────────
+// ───────────────────────── Capture ─────────────────────────
 
 fn monitors() -> Vec<(xcap::Monitor, Monitor)> {
     xcap::Monitor::all()
@@ -104,7 +104,7 @@ fn monitors() -> Vec<(xcap::Monitor, Monitor)> {
         .collect()
 }
 
-/// Все мониторы параллельно, кадры в родном разрешении.
+/// All monitors in parallel, frames at native resolution.
 fn grab_all() -> Option<Vec<(Monitor, RgbaImage)>> {
     let list: Vec<Monitor> = monitors().into_iter().map(|(_, info)| info).collect();
     if list.is_empty() {
@@ -114,7 +114,7 @@ fn grab_all() -> Option<Vec<(Monitor, RgbaImage)>> {
         let jobs: Vec<_> = list
             .into_iter()
             .map(|info| {
-                // Монитор xcap нельзя передавать между потоками, поэтому находим его заново
+                // An xcap monitor can't be sent across threads, so look it up again
                 s.spawn(move || {
                     let m = xcap::Monitor::from_point(info.x + info.w as i32 / 2, info.y + info.h as i32 / 2).ok()?;
                     let img = m.capture_image().ok()?;
@@ -126,7 +126,86 @@ fn grab_all() -> Option<Vec<(Monitor, RgbaImage)>> {
     })
 }
 
-/// Хоткей или пункт трея. Повторное нажатие, пока оверлей открыт, закрывает его.
+/// The monitor the cursor is currently on (otherwise the first one).
+pub fn monitor_under_cursor() -> Option<Monitor> {
+    let list: Vec<Monitor> = monitors().into_iter().map(|(_, m)| m).collect();
+    let cursor = crate::app().cursor_position().ok();
+    cursor.and_then(|c| list.iter().copied().find(|m| m.contains(c.x, c.y))).or_else(|| list.first().copied())
+}
+
+/// The monitor containing most of the rectangle (physical pixels).
+fn monitor_for_rect(l: i32, t: i32, r: i32, b: i32) -> Option<Monitor> {
+    let area = |m: &Monitor| -> i64 {
+        let w = (r.min(m.x + m.w as i32) - l.max(m.x)).max(0) as i64;
+        let h = (b.min(m.y + m.h as i32) - t.max(m.y)).max(0) as i64;
+        w * h
+    };
+    let list: Vec<Monitor> = monitors().into_iter().map(|(_, m)| m).collect();
+    list.into_iter().filter(|m| area(m) > 0).max_by_key(area)
+}
+
+/// Frame of a single monitor at native resolution.
+fn grab_one(mon: &Monitor) -> Option<RgbaImage> {
+    xcap::Monitor::from_point(mon.x + mon.w as i32 / 2, mon.y + mon.h as i32 / 2).ok()?.capture_image().ok()
+}
+
+/// Screenshot without the overlay: straight to the clipboard (and to a file if "Save on copy" is enabled).
+/// Do nothing while the overlay is open: it would end up in the frame.
+fn capture_instant(area: impl FnOnce() -> Option<(Monitor, Option<(i32, i32, i32, i32)>)>) {
+    if is_active() {
+        return;
+    }
+    let Some((mon, rect)) = area() else {
+        notify::notify(&t("captureFailed"), None);
+        return;
+    };
+    let Some(img) = grab_one(&mon) else {
+        notify::notify(&t("captureFailed"), None);
+        return;
+    };
+    // Region inside the monitor (physical pixels), otherwise the whole monitor
+    let (l, t_, r, b) = match rect {
+        Some((l, t_, r, b)) => (l.max(mon.x), t_.max(mon.y), r.min(mon.x + mon.w as i32), b.min(mon.y + mon.h as i32)),
+        None => (mon.x, mon.y, mon.x + mon.w as i32, mon.y + mon.h as i32),
+    };
+    if r - l < 1 || b - t_ < 1 {
+        notify::notify(&t("captureFailed"), None);
+        return;
+    }
+    // The xcap frame may differ from the monitor size at fractional scaling: rescale
+    let kx = img.width() as f64 / mon.w as f64;
+    let ky = img.height() as f64 / mon.h as f64;
+    let x = (((l - mon.x) as f64 * kx).round() as u32).min(img.width() - 1);
+    let y = (((t_ - mon.y) as f64 * ky).round() as u32).min(img.height() - 1);
+    let w = (((r - l) as f64 * kx).round() as u32).clamp(1, img.width() - x);
+    let h = (((b - t_) as f64 * ky).round() as u32).clamp(1, img.height() - y);
+    let out = if x == 0 && y == 0 && w == img.width() && h == img.height() {
+        img
+    } else {
+        image::imageops::crop_imm(&img, x, y, w, h).to_image()
+    };
+    finish("copy", out, None, (l, t_, (r - l) as u32, (b - t_) as u32));
+}
+
+/// Hotkey: whole screen (the one with the cursor) straight to the clipboard.
+pub fn capture_full() {
+    capture_instant(|| monitor_under_cursor().map(|m| (m, None)));
+}
+
+/// Hotkey: active window straight to the clipboard. If there is no window (desktop), take the whole screen.
+pub fn capture_window() {
+    capture_instant(|| {
+        #[cfg(windows)]
+        if let Some((l, t_, r, b)) = crate::winapi::foreground_window_rect() {
+            if let Some(mon) = monitor_for_rect(l, t_, r, b) {
+                return Some((mon, Some((l, t_, r, b))));
+            }
+        }
+        monitor_under_cursor().map(|m| (m, None))
+    });
+}
+
+/// Hotkey or tray item. Pressing again while the overlay is open closes it.
 pub fn start_capture(mode: Mode) {
     let my = {
         let mut s = ST.lock().unwrap();
@@ -146,7 +225,7 @@ pub fn start_capture(mode: Mode) {
         let frames = grab_all();
         dlog!("захват: {} мониторов за {:?}", frames.as_ref().map_or(0, |f| f.len()), t0.elapsed());
         if ST.lock().unwrap().token != my {
-            return; // отменили, пока шёл захват
+            return; // cancelled while capturing
         }
         match frames {
             Some(list) => open_overlay(list, my),
@@ -194,7 +273,7 @@ fn create_overlay_window(mon: &Monitor) -> Option<WebviewWindow> {
     Some(win)
 }
 
-/// Повторная установка границ лечит неверный размер на мониторах с разным DPI.
+/// Setting the bounds again fixes the wrong size on monitors with different DPI.
 fn place(win: &WebviewWindow, mon: &Monitor) {
     for _ in 0..2 {
         let _ = win.set_position(PhysicalPosition::new(mon.x, mon.y));
@@ -257,7 +336,7 @@ fn init_payload(mode: Mode) -> InitPayload {
     }
 }
 
-/// Лог из окна (только dev): замеры задержки
+/// Log from the window (dev only): latency measurements
 #[tauri::command]
 pub async fn dev_log(window: WebviewWindow, msg: String) {
     let since = ST.lock().unwrap().started.map(|t| t.elapsed().as_secs_f64() * 1000.0).unwrap_or(0.0);
@@ -281,13 +360,13 @@ fn send_init(label: &str, mode: Mode) {
     emit_init(label, init_payload(mode));
 }
 
-/// Обычный путь: событие, затем окно само забирает кадр командой overlay_frame (~140 мс на 14 МБ).
+/// Normal path: an event, then the window fetches the frame itself via the overlay_frame command (~140 ms for 14 MB).
 fn emit_init(label: &str, payload: InitPayload) {
     let _ = crate::app().emit_to(EventTarget::webview_window(label), "overlay:init", payload);
 }
 
-/// Быстрый путь Windows: кадр кладём в общую память WebView2, окно читает её без копирования через IPC.
-/// Первые 8 байт: ширина и высота (u32 LE), дальше RGBA. Если WebView2 старый, откатываемся на emit_init.
+/// Windows fast path: the frame goes into WebView2 shared memory, the window reads it without copying through IPC.
+/// First 8 bytes: width and height (u32 LE), then RGBA. If WebView2 is too old, fall back to emit_init.
 #[cfg(windows)]
 fn post_frame(win: WebviewWindow, image: Arc<RgbaImage>, payload: InitPayload) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -312,7 +391,7 @@ fn post_frame(win: WebviewWindow, image: Arc<RgbaImage>, payload: InitPayload) {
                 let core: ICoreWebView2_17 = wv.controller().CoreWebView2()?.cast()?;
                 let data = HSTRING::from(json.as_str());
                 core.PostSharedBufferToScript(&buf, COREWEBVIEW2_SHARED_BUFFER_ACCESS_READ_ONLY, PCWSTR(data.as_ptr()))?;
-                // Наша ссылка больше не нужна: у страницы своя, она освободит её сама
+                // Our reference is no longer needed: the page has its own and will release it itself
                 buf.Close()?;
             }
             Ok(())
@@ -355,7 +434,7 @@ fn open_overlay(list: Vec<(Monitor, RgbaImage)>, my: u64) {
             s.shown = 0;
             for sess in opened {
                 let label = sess.win.label().to_string();
-                // Страница уже загружена (окно было подготовлено заранее): сразу отдаём кадр
+                // Page already loaded (window was prepared in advance): hand over the frame right away
                 if s.ready.contains(&label) {
                     to_init.push(label.clone());
                 }
@@ -376,7 +455,7 @@ fn open_overlay(list: Vec<(Monitor, RgbaImage)>, my: u64) {
     }
     shortcuts::escape_on();
 
-    // Страховка: если оверлей не показался, не оставляем программу «зависшей»
+    // Safety net: if the overlay never showed up, don't leave the app "hung"
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(5));
         let stuck = {
@@ -404,9 +483,9 @@ pub fn close_overlay() {
     schedule_warm(600);
 }
 
-// ───────────────────────── Предзагрузка оверлея ─────────────────────────
-// Создание окна и загрузка страницы занимают большую часть задержки после хоткея.
-// Поэтому на каждый монитор заранее держим скрытое окно с уже загруженной страницей.
+// ───────────────────────── Overlay preloading ─────────────────────────
+// Creating the window and loading the page take most of the delay after the hotkey.
+// So we keep a hidden window with an already loaded page for each monitor in advance.
 
 fn destroy_pool() {
     let pool: Vec<_> = ST.lock().unwrap().pool.drain(..).collect();
@@ -422,12 +501,8 @@ fn warm() {
             return;
         }
     }
-    if !settings::get().fast_start {
-        destroy_pool();
-        return;
-    }
     let current: Vec<Monitor> = monitors().into_iter().map(|(_, m)| m).collect();
-    // Монитор отключили или поменяли: такие окна не подходят
+    // Monitor was disconnected or changed: such windows are unusable
     let stale: Vec<WebviewWindow> = {
         let mut s = ST.lock().unwrap();
         let (keep, drop): (Vec<_>, Vec<_>) = s.pool.drain(..).partition(|(m, _)| current.contains(m));
@@ -470,26 +545,20 @@ fn schedule_warm(delay_ms: u64) {
     });
 }
 
-/// Пересоздать готовые окна (изменилась настройка «быстрый запуск»).
-pub fn rebuild_pool() {
-    destroy_pool();
-    schedule_warm(300);
-}
-
 pub fn shutdown() {
     ST.lock().unwrap().quitting = true;
     close_overlay();
     destroy_pool();
 }
 
-// ───────────────────────── Вспомогательное ─────────────────────────
+// ───────────────────────── Helpers ─────────────────────────
 
 fn session_mon(label: &str) -> Option<(Monitor, Mode)> {
     let s = ST.lock().unwrap();
     s.sessions.get(label).map(|x| (x.mon, s.mode.unwrap_or(Mode::Screenshot)))
 }
 
-/// Проверяет прямоугольник из окна и ограничивает его границами монитора (CSS-пиксели).
+/// Validates a rectangle from the window and clamps it to the monitor bounds (CSS pixels).
 fn clamp_rect(r: Rect, mon: &Monitor) -> Option<Rect> {
     if ![r.x, r.y, r.width, r.height].iter().all(|v| v.is_finite()) {
         return None;
@@ -513,7 +582,7 @@ struct Crop {
     ky: f64,
 }
 
-/// Переводит прямоугольник из CSS-пикселей окна в физические пиксели кадра.
+/// Converts a rectangle from window CSS pixels to physical frame pixels.
 fn crop(img: &RgbaImage, mon: &Monitor, r: Rect) -> Crop {
     let kx = img.width() as f64 / mon.css_w();
     let ky = img.height() as f64 / mon.css_h();
@@ -525,7 +594,7 @@ fn crop(img: &RgbaImage, mon: &Monitor, r: Rect) -> Crop {
     Crop { image, left, top, kx, ky }
 }
 
-/// Экранные координаты выделения в физических пикселях (для окна «Закрепить»).
+/// Screen coordinates of the selection in physical pixels (for the "Pin" window).
 fn placement(mon: &Monitor, r: Rect) -> (i32, i32, u32, u32) {
     (
         mon.x + (r.x * mon.scale).round() as i32,
@@ -551,7 +620,7 @@ fn copy_to_clipboard(img: &RgbaImage) -> Result<(), arboard::Error> {
     })
 }
 
-/// Копировать / сохранить / закрепить. png: уже готовый PNG, если он есть.
+/// Copy / save / pin. png: an already encoded PNG, if there is one.
 fn finish(kind: &str, img: RgbaImage, png: Option<Vec<u8>>, place: (i32, i32, u32, u32)) {
     let st = settings::get();
     let dir = PathBuf::from(&st.save_dir);
@@ -596,8 +665,8 @@ fn empty() -> Response {
     Response::new(Vec::new())
 }
 
-// ───────────────────────── Команды окна оверлея ─────────────────────────
-// Все команды async: так они выполняются вне главного потока и могут ждать окна.
+// ───────────────────────── Overlay window commands ─────────────────────────
+// All commands are async: that way they run off the main thread and can wait for windows.
 
 #[tauri::command]
 pub async fn overlay_ready(window: WebviewWindow) {
@@ -614,8 +683,8 @@ pub async fn overlay_ready(window: WebviewWindow) {
 }
 
 #[tauri::command]
-/// Кадр для показа: 8 байт (ширина, высота: u32 LE), дальше RGBA без сжатия.
-/// Кодировать JPEG дольше, чем передать сырые пиксели.
+/// Frame for display: 8 bytes (width, height: u32 LE), then uncompressed RGBA.
+/// Encoding JPEG takes longer than sending raw pixels.
 pub async fn overlay_frame(window: WebviewWindow) -> Response {
     let s = ST.lock().unwrap();
     let Some(sess) = s.sessions.get(window.label()) else { return empty() };
@@ -639,7 +708,7 @@ pub async fn overlay_shown(window: WebviewWindow) {
         let _ = window.set_focus();
     }
     let _ = window.emit_to(EventTarget::webview_window(window.label()), "overlay:reveal", ());
-    // Страховка: невидимое окно поверх всего не должно перехватывать мышь
+    // Safety net: an invisible window on top of everything must not intercept the mouse
     let w = window.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_millis(250));
@@ -668,7 +737,7 @@ pub async fn overlay_cancel(window: WebviewWindow) {
     }
 }
 
-/// Снимок без аннотаций: кроп делаем здесь, из lossless-оригинала
+/// Screenshot without annotations: crop here, from the lossless original
 #[tauri::command]
 pub async fn overlay_action(window: WebviewWindow, kind: String, rect: Rect) {
     if !is_action(&kind) {
@@ -688,8 +757,8 @@ pub async fn overlay_action(window: WebviewWindow, kind: String, rect: Rect) {
     thread::spawn(move || finish(&kind, img, None, place));
 }
 
-/// Снимок с аннотациями: отдаём окну lossless-кроп, оно рисует поверх и присылает итог.
-/// Первые 32 байта ответа: left, top, kx, ky (f64 LE), дальше PNG.
+/// Screenshot with annotations: hand the window a lossless crop, it draws on top and sends back the result.
+/// First 32 bytes of the response: left, top, kx, ky (f64 LE), then PNG.
 #[tauri::command]
 pub async fn overlay_get_crop(window: WebviewWindow, rect: Rect) -> Response {
     let c = {
@@ -737,7 +806,7 @@ pub async fn overlay_submit(window: WebviewWindow, request: Request<'_>) -> Resu
     Ok(())
 }
 
-/// Пока редактируется текст, Esc не должен закрывать весь оверлей
+/// While text is being edited, Esc must not close the whole overlay
 #[tauri::command]
 pub async fn overlay_escape(window: WebviewWindow, enabled: bool) {
     if session_mon(window.label()).is_none() {
@@ -750,7 +819,7 @@ pub async fn overlay_escape(window: WebviewWindow, enabled: bool) {
     }
 }
 
-/// Вставка картинки на снимок: из буфера обмена
+/// Pasting an image onto the screenshot: from the clipboard
 #[tauri::command]
 pub async fn overlay_clipboard_image(window: WebviewWindow) -> Response {
     if session_mon(window.label()).is_none_or(|(_, m)| m != Mode::Screenshot) {
@@ -764,15 +833,15 @@ pub async fn overlay_clipboard_image(window: WebviewWindow) -> Response {
     Response::new(png.unwrap_or_default())
 }
 
-/// ...или из файла
+/// ...or from a file
 #[tauri::command]
 pub async fn overlay_pick_image(window: WebviewWindow) -> Response {
     use tauri_plugin_dialog::DialogExt;
     if session_mon(window.label()).is_none_or(|(_, m)| m != Mode::Screenshot) {
         return empty();
     }
-    // Оверлей лежит поверх всего: на время диалога опускаем его и освобождаем Esc,
-    // иначе диалог окажется под оверлеем, а Esc закроет весь снимок
+    // The overlay sits on top of everything: lower it for the dialog and release Esc,
+    // otherwise the dialog would end up under the overlay and Esc would close the whole screenshot
     shortcuts::escape_off();
     let _ = window.set_always_on_top(false);
     let w = window.clone();
@@ -805,7 +874,7 @@ pub async fn overlay_pick_image(window: WebviewWindow) -> Response {
     Response::new(data.unwrap_or_default())
 }
 
-/// Режим записи: область выбрана, закрываем оверлей и передаём управление записи
+/// Record mode: region selected, close the overlay and hand control over to recording
 #[tauri::command(rename_all = "camelCase")]
 pub async fn overlay_record(window: WebviewWindow, rect: Rect, mic: bool, system_audio: bool) {
     let Some((mon, mode)) = session_mon(window.label()) else { return };

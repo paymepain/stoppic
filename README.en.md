@@ -1,6 +1,6 @@
 # StopPic
 
-[Русский](README.md) | **English**
+**English** | [Русский](README.md)
 
 A free app for screenshots and screen recording. Select an area, add a label or an arrow, and the picture is already on your clipboard. You can also record your screen to MP4 or GIF, with sound.
 
@@ -9,7 +9,7 @@ It's lightweight: the installer is just a few megabytes, and the app sits quietl
 ## Installation
 
 1. Go to the [Releases](https://github.com/paymepain/stoppic/releases/latest) page and download `StopPic_…_x64-setup.exe`.
-2. Run it and follow the installer steps.
+2. Run it and follow the installer steps. The first thing it asks is the language, English or Russian. The app starts in that language too, and you can change it later in the settings.
 
 Requires Windows 10 or 11. If the Microsoft Edge WebView2 component is missing (it's usually already there), the installer downloads it automatically.
 
@@ -18,6 +18,8 @@ Windows may show a "Windows protected your PC" warning. This happens with new ap
 ## Screenshots
 
 Press `Ctrl+Alt+A` and the screen freezes. Select the area you need with the mouse. The selection can be moved and resized by its edges.
+
+In a hurry? `Ctrl+Alt+Shift+A` copies the whole screen and `Ctrl+Alt+W` copies the active window. The shot goes straight to the clipboard, no selection or annotations.
 
 - `Enter`, `Ctrl+C` or double-click: copy to clipboard
 - `Ctrl+S`: save to a file
@@ -55,6 +57,8 @@ A toolbar appears below the selection:
 2. Turn on the microphone and computer sound if you need them.
 3. Press the red button or `Enter`.
 
+`Ctrl+Alt+Shift+R` starts recording the whole screen right away, with no area selection.
+
 After a 3-2-1 countdown a small panel appears with a timer, pause and stop. You can drag the panel around, and it won't appear in the recording. You can also stop with the same shortcut. The tray icon turns red while recording.
 
 Format (MP4 or GIF) and frame rate (15, 30 or 60) are chosen in settings.
@@ -65,10 +69,10 @@ Open them from the tray menu ("Settings…"). Changes apply immediately.
 
 - **Hotkeys:** click a field and press a new shortcut. If another app already uses it, StopPic will tell you. `↺` restores the default
 - **Saving:** screenshots folder and "Save a file when copying"
-- **Screen recording:** format, frame rate, default microphone and system sound, countdown before start
-- **General:** launch at login, fast capture start, language
+- **Screen recording:** format, frame rate, microphone and system audio, choice of microphone and output device, countdown before start
+- **General:** launch at login, language
 
-"Fast capture start" keeps the app ready so screenshots appear instantly, at the cost of a bit more memory. If memory matters more, turn it off.
+If the sound comes from the wrong device (say, a game plays through headphones while StopPic listens to the speakers), pick the device in the "Screen recording" section. "Windows default" means the device chosen in system settings.
 
 The light or dark theme follows your Windows setting.
 

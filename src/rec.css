@@ -56,10 +56,10 @@ button:hover { background: rgba(255, 255, 255, 0.14); }
 
 .i-play { display: none; }
 
-/* Кнопки идут вплотную, как в панели оверлея */
+/* Buttons sit flush together, like in the overlay toolbar */
 button + button { margin-left: -8px; }
 
-/* Состояния */
+/* States */
 #pill[data-state='countdown'] #dot,
 #pill[data-state='countdown'] #time { display: none; }
 #pill[data-state='countdown'] #count { display: block; }

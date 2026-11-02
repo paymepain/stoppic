@@ -1,4 +1,4 @@
-// «Закрепить»: снимок в маленьком окне поверх всех на том же месте экрана.
+// "Pin": the screenshot in a small always-on-top window at the same place on the screen.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -9,7 +9,7 @@ use tauri::{PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow, WebviewWi
 static PINS: LazyLock<Mutex<HashMap<String, Vec<u8>>>> = LazyLock::new(Default::default);
 static SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// place: экранные координаты и размер в физических пикселях.
+/// place: screen coordinates and size in physical pixels.
 pub fn create(png: Vec<u8>, place: (i32, i32, u32, u32)) {
     let label = format!("pin-{}", SEQ.fetch_add(1, Ordering::Relaxed) + 1);
     PINS.lock().unwrap().insert(label.clone(), png);

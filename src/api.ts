@@ -1,5 +1,5 @@
-// Мост к Rust-части. Повторяет прежний window.api из Electron-preload,
-// поэтому код окон почти не изменился.
+// Bridge to the Rust side. Mirrors the former window.api from the Electron preload,
+// so the window code barely changed.
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import type {
@@ -17,19 +17,20 @@ import type {
 } from './shared/ipc'
 
 const win = getCurrentWebviewWindow()
-/** Замеры задержки в dev-режиме (в консоль Rust) */
+/** Latency measurements in dev mode (printed to the Rust console) */
 export const devLog = (msg: string): void => {
   if (import.meta.env.DEV) void invoke('dev_log', { msg })
 }
-const fire = (cmd: string, args?: Record<string, unknown>): void => void invoke(cmd, args).catch(console.error)
+const fire = (cmd: string, args?: Record<string, unknown>): void =>
+  void invoke(cmd, args).catch((e) => void invoke('dev_log', { msg: `${cmd}: ${String(e)}` }))
 
-/** Пустой ответ означает «нет данных» (не картинка, отмена диалога и т.п.) */
+/** An empty response means "no data" (not an image, dialog cancelled, etc.) */
 const bytesOrNull = (buf: ArrayBuffer): Uint8Array | null => (buf.byteLength > 0 ? new Uint8Array(buf) : null)
 
-// Подписку на кадр ставим сразу при загрузке, чтобы ready() не обогнал её
+// Subscribe to the frame right at load time so ready() cannot overtake the subscription
 let initCb: ((data: OverlayInit) => void) | null = null
 let revealCb: (() => void) | null = null
-/** Кадр: 8 байт (ширина, высота: u32 LE), дальше RGBA */
+/** Frame: 8 bytes (width, height: u32 LE), then RGBA */
 async function toBitmap(buf: ArrayBuffer): Promise<ImageBitmap> {
   const head = new DataView(buf, 0, 8)
   const w = head.getUint32(0, true)
@@ -37,7 +38,7 @@ async function toBitmap(buf: ArrayBuffer): Promise<ImageBitmap> {
   return createImageBitmap(new ImageData(new Uint8ClampedArray(buf, 8, w * h * 4), w, h))
 }
 
-// Быстрый путь Windows: кадр приходит в общей памяти WebView2, без копирования через IPC
+// Windows fast path: the frame arrives in WebView2 shared memory, with no copy through IPC
 interface SharedBufferEvent extends Event {
   getBuffer(): ArrayBuffer
   additionalData: Omit<OverlayInit, 'frame'>
@@ -66,8 +67,8 @@ const listening = Promise.all([
     initCb = null
     if (!cb) return
     devLog('init получен')
-    // Сырые пиксели без сжатия: по IPC Tauri это быстрее, чем кодировать JPEG.
-    // Первые 8 байт: ширина и высота (u32 LE), дальше RGBA
+    // Raw uncompressed pixels: over Tauri IPC this is faster than encoding JPEG.
+    // First 8 bytes: width and height (u32 LE), then RGBA
     const buf = await invoke<ArrayBuffer>('overlay_frame')
     devLog(`кадр получен по IPC ${(buf.byteLength / 1048576).toFixed(1)} МБ`)
     const frame = await toBitmap(buf)
@@ -82,26 +83,26 @@ const listening = Promise.all([
 ])
 
 const api = {
-  // ───── Оверлей снимка / выбор области записи ─────
-  /** Страница загружена и готова принять кадр (оверлей создаётся заранее и ждёт) */
+  // ───── Screenshot overlay / recording area selection ─────
+  /** Page is loaded and ready to receive the frame (the overlay is created ahead of time and waits) */
   ready: (): void => void listening.then(() => invoke('overlay_ready')),
   onInit: (cb: (data: OverlayInit) => void): void => {
     initCb = cb
   },
   shown: (): void => fire('overlay_shown'),
-  /** Окно показано прозрачным: ждём, когда в нём будет отрисован кадр */
+  /** Window is shown transparent: wait until the frame has been drawn in it */
   onReveal: (cb: () => void): void => {
     revealCb = cb
   },
   revealed: (): void => fire('overlay_revealed'),
   cancel: (): void => fire('overlay_cancel'),
-  /** Быстрый путь: снимок без аннотаций, кроп делает Rust */
+  /** Fast path: screenshot without annotations, Rust does the crop */
   action: (type: OverlayAction, rect: Rect): void => fire('overlay_action', { kind: type, rect }),
-  /** Путь с аннотациями: забрать lossless-кроп, собрать итог и отправить обратно */
+  /** Annotation path: fetch a lossless crop, compose the result and send it back */
   getCrop: async (rect: Rect): Promise<CropData | null> => {
     const buf = await invoke<ArrayBuffer>('overlay_get_crop', { rect })
     if (buf.byteLength <= 32) return null
-    // Первые 32 байта: left, top, kx, ky (f64, little-endian), дальше PNG
+    // First 32 bytes: left, top, kx, ky (f64, little-endian), then PNG
     const head = new DataView(buf, 0, 32)
     return {
       left: head.getFloat64(0, true),
@@ -113,34 +114,36 @@ const api = {
   },
   submit: (type: OverlayAction, rect: Rect, png: Uint8Array): void =>
     void invoke('overlay_submit', png, { headers: { 'x-kind': type, 'x-rect': JSON.stringify(rect) } }).catch(console.error),
-  /** Пока редактируется текст, Esc не должен закрывать весь оверлей */
+  /** While text is being edited, Esc must not close the whole overlay */
   setEscape: (enabled: boolean): void => fire('overlay_escape', { enabled }),
-  /** Картинка из буфера обмена (PNG) или null, если там не картинка */
+  /** Image from the clipboard (PNG), or null if the clipboard holds no image */
   readClipboardImage: async (): Promise<Uint8Array | null> => bytesOrNull(await invoke('overlay_clipboard_image')),
-  /** Диалог выбора файла с картинкой */
+  /** File picker dialog for an image */
   pickImageFile: async (): Promise<Uint8Array | null> => bytesOrNull(await invoke('overlay_pick_image')),
-  /** Режим записи: область выбрана, начинаем */
+  /** Recording mode: area selected, start recording */
   recordStart: (rect: Rect, opts: { mic: boolean; systemAudio: boolean }): void =>
     fire('overlay_record', { rect, mic: opts.mic, systemAudio: opts.systemAudio }),
 
-  // ───── Закреплённый снимок ─────
+  // ───── Pinned screenshot ─────
   pinGetInit: async (): Promise<Uint8Array | null> => bytesOrNull(await invoke('pin_get_init')),
   pinClose: (): void => fire('pin_close'),
-  /** Окно без рамки двигаем сами: CSS app-region в WebView2 не работает */
+  /** We drag the frameless window ourselves: CSS app-region does not work in WebView2 */
   startDrag: (): void => void win.startDragging().catch(console.error),
 
-  // ───── Панель записи ─────
+  // ───── Recording panel ─────
   recGetConfig: (): Promise<RecConfig | null> => invoke('rec_get_config'),
-  /** Запустить захват после отсчёта. Ошибку показывает Rust, панель просто закроется. */
+  /** Start capture after the countdown. Rust shows any error; the panel just closes. */
   recStart: (): Promise<boolean> => invoke('rec_start'),
   recCommand: (cmd: RecCommand): void => fire('rec_command', { cmd }),
-  /** Команды извне (хоткей, трей) и прогресс сборки GIF */
+  /** External commands (hotkey, tray) and GIF assembly progress */
   onRecCommand: (cb: (cmd: RecCommand) => void): void => void win.listen<RecCommand>('rec:cmd', (e) => cb(e.payload)),
   onRecProgress: (cb: (percent: number) => void): void => void win.listen<number>('rec:progress', (e) => cb(e.payload)),
 
-  // ───── Окно настроек ─────
+  // ───── Settings window ─────
   settingsGet: (): Promise<SettingsState | null> => invoke('settings_get'),
   settingsSet: (patch: SettingsPatch): Promise<SettingsState> => invoke('settings_set', { patch }),
+  /** Content height in CSS px: the window shrinks to it and cannot be made taller */
+  settingsFit: (height: number): void => fire('settings_fit', { height }),
   setHotkey: (name: HotkeyName, accel: string): Promise<HotkeyResult> => invoke('settings_set_hotkey', { name, accel }),
   hotkeysPause: (paused: boolean): void => fire('settings_hotkeys_pause', { paused }),
   chooseDir: (): Promise<DirResult> => invoke('settings_choose_dir'),
@@ -158,7 +161,7 @@ declare global {
 
 window.api = api
 
-// Окна без контекстного меню браузера и без перезагрузки по F5/Ctrl+R
+// Windows have no browser context menu and no reload on F5/Ctrl+R
 document.addEventListener('contextmenu', (e) => e.preventDefault())
 document.addEventListener('keydown', (e) => {
   if (e.key === 'F5' || ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R'))) e.preventDefault()

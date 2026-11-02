@@ -1,7 +1,7 @@
 import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
 
-// Каждое окно программы это отдельная страница
+// Each app window is a separate page
 export default defineConfig({
   root: 'src',
   clearScreen: false,

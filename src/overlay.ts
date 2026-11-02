@@ -3,16 +3,16 @@ import './overlay.css'
 import type { OverlayAction, OverlayInit, OverlayMode, Rect } from './shared/ipc'
 import { icon, type IconName } from './shared/icons'
 
-// ───────────────────────── Модель аннотаций ─────────────────────────
-// Координаты аннотаций хранятся в CSS-пикселях окна, поэтому не зависят от рамки выделения.
+// ───────────────────────── Annotation model ─────────────────────────
+// Annotation coordinates are stored in window CSS pixels, so they do not depend on the selection rect.
 
-interface Base { id: number; color: string; s: number } // s: индекс размера 0..2
+interface Base { id: number; color: string; s: number } // s: size index 0..2
 interface ArrowA extends Base { type: 'arrow'; x1: number; y1: number; x2: number; y2: number }
 interface LineA extends Base { type: 'line'; x1: number; y1: number; x2: number; y2: number }
 interface RectA extends Base { type: 'rect'; x: number; y: number; w: number; h: number }
 interface MarkerA extends Base { type: 'marker'; pts: Array<[number, number]> }
 interface PenA extends Base { type: 'pen'; pts: Array<[number, number]> }
-/** Вставленная картинка. Сами пиксели лежат в реестре images, а не в истории: иначе каждый шаг отмены копировал бы мегабайты. */
+/** Inserted image. The pixels live in the images registry, not in history: otherwise every undo step would copy megabytes. */
 interface ImageA extends Base { type: 'image'; x: number; y: number; w: number; h: number; img: number }
 interface TextA extends Base { type: 'text'; x: number; y: number; text: string }
 interface NumberA extends Base { type: 'number'; x: number; y: number; n: number }
@@ -23,7 +23,7 @@ type DrawTool = Exclude<Tool, 'select'>
 
 const LINE_W = [2, 4, 7]
 const MARK_W = [12, 20, 30]
-const images = new Map<number, ImageBitmap>() // id → пиксели вставленных картинок
+const images = new Map<number, ImageBitmap>() // id → pixels of inserted images
 let imgSeq = 0
 const TEXT_PX = [16, 22, 32]
 const NUM_R = [11, 14, 19]
@@ -32,7 +32,7 @@ const COLORS = ['#ef4444', '#facc15', '#22c55e', '#3b82f6', '#111827']
 const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif'
 const MIN = 4
 
-/** Перевод CSS-пикселей окна в пиксели холста: px = x * kx + tx */
+/** Maps window CSS pixels to canvas pixels: px = x * kx + tx */
 interface Xf { kx: number; ky: number; tx: number; ty: number }
 
 const clamp = (v: number, lo: number, hi: number): number => Math.min(Math.max(v, lo), hi)
@@ -96,11 +96,11 @@ function hit(a: Ann, x: number, y: number): boolean {
     case 'rect': {
       const outer = x >= a.x - tol && x <= a.x + a.w + tol && y >= a.y - tol && y <= a.y + a.h + tol
       const inner = x > a.x + tol && x < a.x + a.w - tol && y > a.y + tol && y < a.y + a.h - tol
-      return outer && !inner // попадание только по контуру, чтобы внутри рамки можно было двигать выделение
+      return outer && !inner // hit only on the outline, so the selection can still be moved from inside the rect
     }
     case 'marker':
     case 'pen': {
-      const r = (a.type === 'pen' ? LINE_W[a.s] / 2 + 4 : MARK_W[a.s] / 2) // у тонкого пера запас, чтобы в него можно было попасть
+      const r = (a.type === 'pen' ? LINE_W[a.s] / 2 + 4 : MARK_W[a.s] / 2) // extra tolerance for a thin pen so it can actually be hit
       if (a.pts.length === 1) return Math.hypot(x - a.pts[0][0], y - a.pts[0][1]) <= r
       for (let i = 1; i < a.pts.length; i++) {
         const p = a.pts[i - 1]
@@ -133,7 +133,7 @@ function moved(a: Ann, dx: number, dy: number): Ann {
   }
 }
 
-// ───────────────────────── Рисование ─────────────────────────
+// ───────────────────────── Drawing ─────────────────────────
 
 const tmp = document.createElement('canvas')
 
@@ -143,7 +143,7 @@ function textOn(color: string): string {
   return lum > 150 ? '#111827' : '#ffffff'
 }
 
-/** Пикселизация области холста: необратима, в отличие от лёгкого гауссова размытия. */
+/** Pixelates a canvas region: irreversible, unlike a light Gaussian blur. */
 function pixelate(ctx: CanvasRenderingContext2D, a: BlurA, xf: Xf): void {
   const cw = ctx.canvas.width
   const ch = ctx.canvas.height
@@ -219,7 +219,7 @@ function drawAnn(ctx: CanvasRenderingContext2D, a: Ann, xf: Xf): void {
       ctx.strokeRect(a.x, a.y, a.w, a.h)
       break
     case 'pen': {
-      // Свободная линия, сглаженная квадратичными кривыми через середины отрезков
+      // Freehand line smoothed with quadratic curves through segment midpoints
       const p = a.pts
       ctx.lineWidth = LINE_W[a.s]
       ctx.beginPath()
@@ -256,7 +256,7 @@ function drawAnn(ctx: CanvasRenderingContext2D, a: Ann, xf: Xf): void {
       ctx.font = fontOf(a)
       ctx.textBaseline = 'top'
       const lh = lineH(a)
-      const lead = (lh - TEXT_PX[a.s]) / 2 // половина интерлиньяжа, как в textarea
+      const lead = (lh - TEXT_PX[a.s]) / 2 // half the leading, like in a textarea
       a.text.split('\n').forEach((line, i) => ctx.fillText(line, a.x, a.y + i * lh + lead))
       break
     }
@@ -288,7 +288,7 @@ function drawAll(ctx: CanvasRenderingContext2D, list: Ann[], xf: Xf, selectedId:
     ctx.setLineDash([4, 3])
     ctx.strokeRect(b.x - 4, b.y - 4, b.width + 8, b.height + 8)
     if (s.type === 'image') {
-      // Ручка в правом нижнем углу: тянем, чтобы менять размер с сохранением пропорций
+      // Handle in the bottom-right corner: drag to resize while keeping the aspect ratio
       ctx.setLineDash([])
       ctx.fillStyle = '#ffffff'
       ctx.fillRect(b.x + b.width - 5, b.y + b.height - 5, 10, 10)
@@ -298,7 +298,7 @@ function drawAll(ctx: CanvasRenderingContext2D, list: Ann[], xf: Xf, selectedId:
   }
 }
 
-// ───────────────────────── Состояние ─────────────────────────
+// ───────────────────────── State ─────────────────────────
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T
 const cv = $<HTMLCanvasElement>('cv')
@@ -313,14 +313,14 @@ const rowOpts = $('row-opts')
 let bgImg: ImageBitmap
 let live: Xf = { kx: 1, ky: 1, tx: 0, ty: 0 }
 
-let rect: Rect | null = null // рамка выделения
+let rect: Rect | null = null // selection rect
 let items: Ann[] = []
 let draft: Ann | null = null
 let selectedId: number | null = null
 let seq = 0
 let tool: Tool = 'select'
 let busy = false
-// Один оверлей служит и для снимка, и для выбора области записи
+// A single overlay serves both taking a screenshot and picking the recording area
 let appMode: OverlayMode = 'screenshot'
 const rec = { mic: false, sys: false, gif: false }
 
@@ -329,7 +329,7 @@ const toolColor: Record<DrawTool, string> = {
 }
 const toolSize: Record<DrawTool, number> = { arrow: 1, line: 1, pen: 1, rect: 1, marker: 1, text: 1, blur: 1, number: 1 }
 
-// История: снимки массива аннотаций
+// History: snapshots of the annotation array
 let history: string[] = ['[]']
 let hIndex = 0
 
@@ -368,7 +368,7 @@ function schedulePaint(): void {
   })
 }
 
-// ───────────────────────── Панель ─────────────────────────
+// ───────────────────────── Toolbar ─────────────────────────
 
 const buttons = new Map<IconName, HTMLButtonElement>()
 let labels: Record<string, string> = {}
@@ -392,7 +392,7 @@ let colorGroup: HTMLElement[] = []
 
 function buildRecordBar(): void {
   if (!rec.gif) {
-    // GIF без звука: переключатели не нужны
+    // GIF has no audio: no toggles needed
     rowMain.appendChild(makeBtn('mic', () => { rec.mic = !rec.mic; syncUI() }))
     rowMain.appendChild(makeBtn('sys', () => { rec.sys = !rec.sys; syncUI() }))
     rowMain.appendChild(sep())
@@ -434,21 +434,23 @@ function buildBar(): void {
   ;[6, 10, 14].forEach((px, i) => {
     const el = document.createElement('div')
     el.className = 'sz'
-    el.innerHTML = `<i style="width:${px}px;height:${px}px"></i>`
+    const dot = document.createElement('i')
+    dot.style.width = dot.style.height = `${px}px`
+    el.appendChild(dot)
     el.addEventListener('click', () => setSize(i))
     szEls.push(el)
     rowOpts.appendChild(el)
   })
 }
 
-// ───────────────────────── Свой цвет ─────────────────────────
-// Палитра рисуется прямо в оверлее: системный диалог цвета оказался бы под окном «поверх всего»
+// ───────────────────────── Custom color ─────────────────────────
+// The palette is drawn inside the overlay: the system color dialog would end up under the "always on top" window
 
 const CUSTOM_KEY = 'customColor'
 const HEX_RE = /^#[0-9a-f]{6}$/
 let customColor: string | null = loadCustomColor()
-const customDot = document.createElement('div') // выбранный свой цвет, виден когда он есть
-const pickerBtn = document.createElement('div') // «+»: всегда открывает палитру
+const customDot = document.createElement('div') // the chosen custom color, visible once there is one
+const pickerBtn = document.createElement('div') // "+": always opens the palette
 const palette = document.createElement('div')
 palette.hidden = true
 let hexInput: HTMLInputElement
@@ -466,7 +468,7 @@ function saveCustomColor(c: string): void {
   try {
     localStorage.setItem(CUSTOM_KEY, c)
   } catch {
-    // не сохранилось — цвет останется только до закрытия оверлея
+    // not saved: the color only lasts until the overlay closes
   }
 }
 
@@ -480,7 +482,7 @@ function hslHex(h: number, s: number, l: number): string {
   return `#${f(0)}${f(8)}${f(4)}`
 }
 
-/** Оттенки по кругу × несколько светлот, плюс ряд серых. */
+/** Hues around the wheel × several lightness levels, plus a row of grays. */
 function paletteColors(): string[][] {
   const hues = [0, 20, 40, 55, 80, 130, 165, 190, 210, 240, 270, 300, 330]
   const rows = [85, 70, 55, 42, 30].map((l) => hues.map((h) => hslHex(h, 85, l)))
@@ -531,7 +533,7 @@ function buildCustomColor(): void {
   hexInput.spellcheck = false
   hexInput.placeholder = '#rrggbb'
   hexInput.addEventListener('keydown', (ev) => {
-    ev.stopPropagation() // буквы не должны переключать инструменты
+    ev.stopPropagation() // letters must not switch tools
     if (ev.key === 'Enter') {
       ev.preventDefault()
       const c = normalizeHex(hexInput.value)
@@ -542,7 +544,7 @@ function buildCustomColor(): void {
     }
   })
   hexInput.addEventListener('input', () => {
-    // На лету применяем только полный #rrggbb, короткий #rgb — по Enter
+    // Apply only a full #rrggbb on the fly; short #rgb is applied on Enter
     const c = normalizeHex(hexInput.value)
     const full = c !== null && hexInput.value.replace('#', '').trim().length === 6
     hexInput.classList.toggle('bad', c === null && hexInput.value.trim() !== '')
@@ -579,11 +581,11 @@ function openPalette(): void {
   pickerBtn.classList.add('open')
   hexInput.value = customColor ?? ''
   hexInput.classList.remove('bad')
-  // Под панелью, а если не помещается — над ней
+  // Below the toolbar, or above it if it does not fit
   palette.classList.remove('up')
   const br = bar.getBoundingClientRect()
   if (br.bottom + palette.offsetHeight + 8 > window.innerHeight) palette.classList.add('up')
-  window.api.setEscape(false) // Esc закрывает палитру, а не весь оверлей
+  window.api.setEscape(false) // Esc closes the palette, not the whole overlay
 }
 
 function closePalette(): void {
@@ -622,7 +624,7 @@ function syncUI(): void {
     pickerBtn.classList.toggle('open', !palette.hidden)
     if (target === 'blur') closePalette()
     szEls.forEach((el, i) => el.classList.toggle('on', i === size))
-    for (const el of colorGroup) el.hidden = target === 'blur' // у пикселизации нет цвета
+    for (const el of colorGroup) el.hidden = target === 'blur' // pixelation has no color
     if (customColor === null) customDot.hidden = true
   }
   document.body.classList.toggle('tool-draw', tool !== 'select' && tool !== 'text')
@@ -662,7 +664,7 @@ function setSize(i: number): void {
   }
 }
 
-// ───────────────────────── Выделение области ─────────────────────────
+// ───────────────────────── Area selection ─────────────────────────
 
 for (const h of ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']) {
   const el = document.createElement('div')
@@ -700,7 +702,7 @@ function render(): void {
   sel.style.width = `${rect.width}px`
   sel.style.height = `${rect.height}px`
 
-  // Размер показываем в физических пикселях: именно такой будет файл
+  // Show the size in physical pixels: that is exactly what the file will be
   const k = live.kx || 1
   sizeLabel.textContent = `${Math.round(rect.width * k)} × ${Math.round(rect.height * k)}`
   sizeLabel.classList.toggle('inside', rect.y < 30)
@@ -714,17 +716,17 @@ function placeBar(r: Rect): void {
   const bh = bar.offsetHeight
   const gap = 8
   let top = r.y + r.height + gap
-  if (top + bh > window.innerHeight - 4) top = r.y - bh - gap // не влезло снизу: над выделением
-  if (top < 4) top = r.y + r.height - bh - gap // не влезло и сверху: внутрь
+  if (top + bh > window.innerHeight - 4) top = r.y - bh - gap // does not fit below: place above the selection
+  if (top < 4) top = r.y + r.height - bh - gap // does not fit above either: place inside
   bar.style.top = `${clamp(top, 4, window.innerHeight - bh - 4)}px`
   bar.style.left = `${clamp(r.x + r.width - bw, 4, window.innerWidth - bw - 4)}px`
 }
 
-// ───────────────────────── Итоговый снимок ─────────────────────────
+// ───────────────────────── Final screenshot ─────────────────────────
 
 /**
- * Вставляет картинку поверх снимка. Ctrl+V берёт её из буфера обмена, кнопка открывает выбор файла.
- * Картинка ставится по центру выделения в натуральном размере (но не больше 70% выделения).
+ * Inserts an image on top of the screenshot. Ctrl+V takes it from the clipboard, the button opens a file picker.
+ * The image is centered in the selection at natural size (but no larger than 70% of the selection).
  */
 async function insertImage(fromFile: boolean): Promise<void> {
   commitText()
@@ -735,19 +737,19 @@ async function insertImage(fromFile: boolean): Promise<void> {
   try {
     bmp = await createImageBitmap(new Blob([new Uint8Array(bytes)]))
   } catch {
-    return // файл не картинка
+    return // the file is not an image
   }
   const r = rect
   const id = ++imgSeq
   images.set(id, bmp)
-  let w = bmp.width / live.kx // 1:1 в физических пикселях
+  let w = bmp.width / live.kx // 1:1 in physical pixels
   let h = bmp.height / live.ky
   const fit = Math.min(1, (r.width * 0.7) / w, (r.height * 0.7) / h)
   w = Math.max(16, w * fit)
   h = Math.max(16, h * fit)
   const item: ImageA = { id: ++seq, type: 'image', color: '#000000', s: 1, img: id, x: r.x + (r.width - w) / 2, y: r.y + (r.height - h) / 2, w, h }
   items.push(item)
-  tool = 'select' // сразу можно перетаскивать и менять размер
+  tool = 'select' // can be dragged and resized right away
   selectedId = item.id
   commit()
   schedulePaint()
@@ -759,7 +761,7 @@ function startRecord(): void {
 
 async function finishWith(type: OverlayAction): Promise<void> {
   if (appMode === 'record') {
-    startRecord() // Enter и двойной клик в режиме записи начинают запись
+    startRecord() // Enter and double-click in record mode start the recording
     return
   }
   commitText()
@@ -768,7 +770,7 @@ async function finishWith(type: OverlayAction): Promise<void> {
   try {
     const r = { ...rect }
     if (items.length === 0) {
-      window.api.action(type, r) // быстрый путь: аннотаций нет
+      window.api.action(type, r) // fast path: no annotations
       return
     }
     const crop = await window.api.getCrop(r)
@@ -797,7 +799,7 @@ async function finishWith(type: OverlayAction): Promise<void> {
   }
 }
 
-// ───────────────────────── Текст ─────────────────────────
+// ───────────────────────── Text ─────────────────────────
 
 interface Editing { x: number; y: number; color: string; s: number; orig?: TextA; el: HTMLTextAreaElement }
 let editing: Editing | null = null
@@ -833,7 +835,7 @@ function startTextEdit(x: number, y: number, orig?: TextA): void {
   el.addEventListener('blur', () => commitText())
   document.body.appendChild(el)
   editing = { x, y, color, s, orig, el }
-  window.api.setEscape(false) // иначе глобальный Esc закроет весь оверлей
+  window.api.setEscape(false) // otherwise the global Esc would close the whole overlay
   el.focus()
 }
 
@@ -848,7 +850,7 @@ function commitText(): void {
     items.push({ id: e.orig?.id ?? ++seq, type: 'text', x: e.x, y: e.y, text, color: e.color, s: e.s })
     commit()
   } else if (e.orig) {
-    commit() // пустой текст у существующей подписи = удаление
+    commit() // empty text on an existing label = deletion
   }
   schedulePaint()
 }
@@ -863,14 +865,14 @@ function cancelText(): void {
   schedulePaint()
 }
 
-// ───────────────────────── Мышь ─────────────────────────
+// ───────────────────────── Mouse ─────────────────────────
 
 function pick(x: number, y: number): Ann | undefined {
   for (let i = items.length - 1; i >= 0; i--) if (hit(items[i], x, y)) return items[i]
   return undefined
 }
 
-/** Начинает рисование выбранным инструментом. Возвращает true, если нужен drag. */
+/** Starts drawing with the selected tool. Returns true if a drag is needed. */
 function beginDraw(x: number, y: number): boolean {
   const base = { id: ++seq, color: toolColor[tool as DrawTool], s: toolSize[tool as DrawTool] }
   switch (tool as DrawTool) {
@@ -913,7 +915,7 @@ function updateDraft(d: Ann, sx: number, sy: number, cx: number, cy: number, shi
       let x2 = cx
       let y2 = cy
       if (shift) {
-        // Shift: угол кратен 45°
+        // Shift: snap the angle to multiples of 45°
         const len = Math.hypot(cx - sx, cy - sy)
         const ang = Math.round(Math.atan2(cy - sy, cx - sx) / (Math.PI / 4)) * (Math.PI / 4)
         x2 = sx + Math.cos(ang) * len
@@ -966,7 +968,7 @@ document.addEventListener('mousedown', (e) => {
   if (!target.closest('.palette') && !pickerBtn.contains(target)) closePalette()
   if (target.closest('#bar')) return
   if (editing) {
-    if (target !== editing.el) commitText() // первый клик вне редактора только завершает текст
+    if (target !== editing.el) commitText() // the first click outside the editor only commits the text
     return
   }
 
@@ -993,14 +995,14 @@ document.addEventListener('mousedown', (e) => {
       syncUI()
       schedulePaint()
     } else if (tool === 'text' && pick(x, y)?.type === 'text') {
-      // Инструмент «Текст» поверх готовой надписи: тянем — двигаем, просто клик — редактируем
+      // Text tool over an existing label: dragging moves it, a plain click edits it
       const a = pick(x, y) as TextA
       selectedId = a.id
       mode = { kind: 'annMove', sx: x, sy: y, orig: { ...a }, editOnClick: true }
       schedulePaint()
     } else {
       if (!beginDraw(x, y)) {
-        e.preventDefault() // иначе браузер переведёт фокус на клик и поле текста сразу закроется пустым
+        e.preventDefault() // otherwise the browser moves focus on click and the text field closes empty right away
         return
       }
       mode = { kind: 'draw', sx: x, sy: y }
@@ -1104,7 +1106,7 @@ document.addEventListener('mouseup', () => {
       schedulePaint()
     }
   } else if (rect && (rect.width < MIN || rect.height < MIN)) {
-    rect = null // простой клик без протяжки не создаёт выделение
+    rect = null // a plain click without dragging does not create a selection
   }
 
   mode = { kind: 'none' }
@@ -1119,20 +1121,20 @@ document.addEventListener('dblclick', (e) => {
   else if (!a) void finishWith('copy')
 })
 
-// Правая кнопка мыши отменяет снимок
+// Right mouse button cancels the screenshot
 document.addEventListener('contextmenu', (e) => {
   e.preventDefault()
   if (!editing) window.api.cancel()
 })
 
-// ───────────────────────── Клавиатура ─────────────────────────
+// ───────────────────────── Keyboard ─────────────────────────
 
 const HOTKEYS: Record<string, Tool> = { v: 'select', p: 'pen', a: 'arrow', l: 'line', r: 'rect', m: 'marker', t: 'text', b: 'blur', n: 'number' }
 
 document.addEventListener('keydown', (e) => {
   if (editing) return
   const mod = e.ctrlKey || e.metaKey
-  // Буква совпадает и по символу (латиница, Dvorak), и по физической клавише (русская раскладка)
+  // Match the letter both by character (Latin, Dvorak) and by physical key (Russian layout)
   const is = (letter: string): boolean => e.key.toLowerCase() === letter || e.code === `Key${letter.toUpperCase()}`
   const toolKey = Object.keys(HOTKEYS).find(is)
 
@@ -1168,7 +1170,7 @@ document.addEventListener('keydown', (e) => {
   } else if (appMode === 'screenshot' && !mod && !e.altKey && toolKey) {
     setTool(HOTKEYS[toolKey])
   } else if (rect && e.key.startsWith('Arrow')) {
-    // Точная подгонка: стрелки двигают выделение (или выбранную аннотацию) на 1 px, с Shift на 10
+    // Fine-tuning: arrow keys move the selection (or the selected annotation) by 1 px, by 10 with Shift
     e.preventDefault()
     const step = e.shiftKey ? 10 : 1
     const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0
@@ -1189,7 +1191,7 @@ document.addEventListener('keydown', (e) => {
   }
 })
 
-// ───────────────────────── Запуск ─────────────────────────
+// ───────────────────────── Startup ─────────────────────────
 
 async function start(data: OverlayInit): Promise<void> {
   labels = data.labels
@@ -1212,11 +1214,11 @@ async function start(data: OverlayInit): Promise<void> {
   cctx.drawImage(bgImg, 0, 0)
   syncUI()
   devLog('нарисован')
-  // Два кадра: первый rAF — до отрисовки, ко второму кадр уже выведен в видимое окно
+  // Two frames: the first rAF fires before paint, by the second the frame is already shown in the visible window
   window.api.onReveal(() => requestAnimationFrame(() => requestAnimationFrame(() => window.api.revealed())))
-  window.api.shown() // main покажет окно только когда кадр уже отрисован
+  window.api.shown() // main shows the window only once the frame has been painted
 }
 
-// Страница может быть загружена заранее и ждать кадра: он придёт событием
+// The page may be preloaded and waiting for the frame: it arrives as an event
 window.api.onInit((data) => void start(data).catch(() => window.api.cancel()))
 window.api.ready()

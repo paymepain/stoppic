@@ -1,7 +1,7 @@
-// В релизе без консольного окна
+// No console window in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-/// Отладочный лог: только в dev-сборке
+/// Debug log: dev builds only
 macro_rules! dlog {
     ($($t:tt)*) => {
         if cfg!(debug_assertions) {
@@ -30,14 +30,14 @@ use tauri::{AppHandle, RunEvent};
 
 static APP: OnceLock<AppHandle> = OnceLock::new();
 
-/// Глобальный доступ к приложению: им пользуются хоткеи, таймеры и потоки записи.
+/// Global access to the app: used by hotkeys, timers and recording threads.
 pub fn app() -> &'static AppHandle {
     APP.get().expect("приложение ещё не запущено")
 }
 
 fn main() {
     let app = tauri::Builder::default()
-        // Только один экземпляр. Повторный запуск открывает настройки: так понятно, что программа уже работает
+        // Single instance only. A second launch opens settings: makes it clear the app is already running
         .plugin(tauri_plugin_single_instance::init(|_app, _args, _cwd| {
             notify::notify(&i18n::t("alreadyRunning"), None);
             settings_window::open();
@@ -67,6 +67,7 @@ fn main() {
             record::rec_command,
             settings_window::settings_get,
             settings_window::settings_set,
+            settings_window::settings_fit,
             settings_window::settings_set_hotkey,
             settings_window::settings_hotkeys_pause,
             settings_window::settings_choose_dir,
@@ -76,7 +77,7 @@ fn main() {
         .setup(|app| {
             let _ = APP.set(app.handle().clone());
             #[cfg(target_os = "macos")]
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory); // без иконки в Dock
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory); // no Dock icon
 
             #[cfg(not(windows))]
             app.handle().plugin(tauri_plugin_notification::init())?;
@@ -88,7 +89,7 @@ fn main() {
             capture::init();
             settings_window::sync_autostart();
 
-            // Первый запуск: у программы нет окна, поэтому говорим, где её искать
+            // First launch: the app has no window, so tell the user where to find it
             if !settings::get().welcomed {
                 settings::update(|s| s.welcomed = true);
                 let key = shortcuts::pretty(&settings::get().hotkeys.screenshot);
@@ -100,7 +101,7 @@ fn main() {
         .expect("не удалось запустить приложение");
 
     app.run(|_app, event| match event {
-        // Программа живёт в трее: закрытие всех окон её не завершает
+        // The app lives in the tray: closing all windows doesn't quit it
         RunEvent::ExitRequested { api, code: None, .. } => api.prevent_exit(),
         RunEvent::Exit => {
             capture::shutdown();

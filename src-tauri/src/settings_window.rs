@@ -1,10 +1,10 @@
 use crate::i18n::{self, t};
 use crate::shortcuts::{self, HotkeyResult, Name};
-use crate::{capture, donate, files, settings, tray};
+use crate::{donate, files, record, settings, tray};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{LogicalSize, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_autostart::ManagerExt;
 
 const LABEL: &str = "settings";
@@ -16,13 +16,17 @@ pub struct State {
     platform: &'static str,
     version: String,
     defaults: settings::Hotkeys,
+    /// Audio devices for the lists in the recording section
+    mics: Vec<record::AudioDevice>,
+    outputs: Vec<record::AudioDevice>,
 }
 
 fn state() -> State {
+    let (mics, outputs) = record::audio_devices();
     State {
         settings: settings::get(),
         strings: i18n::strings(),
-        // Имена платформ как в Node.js: их ждёт окно настроек
+        // Platform names as in Node.js: the settings window expects them
         platform: if cfg!(windows) {
             "win32"
         } else if cfg!(target_os = "macos") {
@@ -32,6 +36,55 @@ fn state() -> State {
         },
         version: crate::app().package_info().version.to_string(),
         defaults: settings::default_hotkeys(),
+        mics,
+        outputs,
+    }
+}
+
+const WIN_W: f64 = 480.0;
+/// Initial height until the page reports its content height (see `settings_fit`)
+const WIN_H: f64 = 860.0;
+const MIN_H: f64 = 360.0;
+
+/// Tallest the window may be on the current monitor: the work area minus the frame and title bar.
+/// On small screens it must not go behind the taskbar.
+fn max_height() -> f64 {
+    let app = crate::app();
+    let mon = app
+        .cursor_position()
+        .ok()
+        .and_then(|c| app.monitor_from_point(c.x, c.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(mon) = mon else { return WIN_H };
+    let scale = mon.scale_factor().max(0.5);
+    let work = mon.work_area().size.height as f64 / scale;
+    (work - 60.0).max(420.0)
+}
+
+fn fitted_size() -> LogicalSize<f64> {
+    LogicalSize::new(WIN_W, WIN_H.min(max_height()))
+}
+
+/// The page reports its content height (CSS px) after every render. The window is never taller
+/// than the content: that is both the size and the upper limit for manual resizing. A window the
+/// user made shorter is left alone, so a toggle does not snap it back.
+#[tauri::command]
+pub async fn settings_fit(window: WebviewWindow, height: f64) {
+    if !from_settings(&window) || !height.is_finite() {
+        return;
+    }
+    let h = height.ceil().clamp(MIN_H, max_height());
+    let _ = window.set_max_size(Some(LogicalSize::new(WIN_W, h)));
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let current = window.inner_size().map(|s| s.height as f64 / scale).unwrap_or(WIN_H);
+    let first = !window.is_visible().unwrap_or(true);
+    if first || current > h + 0.5 {
+        let _ = window.set_size(LogicalSize::new(WIN_W, h));
+    }
+    if first {
+        let _ = window.center();
+        let _ = window.show();
+        let _ = window.set_focus();
     }
 }
 
@@ -39,7 +92,7 @@ fn from_settings(w: &WebviewWindow) -> bool {
     w.label() == LABEL
 }
 
-/// Синхронизируем автозапуск с сохранённым значением
+/// Sync autostart with the saved value
 pub fn sync_autostart() {
     set_autostart(settings::get().auto_launch);
 }
@@ -60,24 +113,35 @@ pub fn open() {
         let _ = w.set_focus();
         return;
     }
+    let size = fitted_size();
     let built = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("settings.html".into()))
         .title(t("settingsTitle"))
-        .inner_size(480.0, 700.0)
-        .resizable(false)
+        .inner_size(size.width, size.height)
+        .min_inner_size(WIN_W, MIN_H)
+        .max_inner_size(WIN_W, size.height)
+        .resizable(true)
         .maximizable(false)
         .center()
-        .visible(true)
+        // Shown by `settings_fit` once the page knows its height, so it does not flash at the wrong size
+        .visible(false)
         .disable_drag_drop_handler()
         .build();
     match built {
         Ok(w) => {
             w.on_window_event(|e| {
-                // На случай, если окно закрыли во время записи сочетания
+                // In case the window was closed while a combination was being recorded
                 if let tauri::WindowEvent::Destroyed = e {
                     shortcuts::resume();
                 }
             });
-            let _ = w.set_focus();
+            // Safety net: if the page never reports its height, show the window anyway
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                if w.is_visible().is_ok_and(|v| !v) {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+            });
         }
         Err(e) => eprintln!("[settings] окно: {e}"),
     }
@@ -93,12 +157,13 @@ pub async fn settings_get(window: WebviewWindow) -> Option<State> {
 pub struct Patch {
     auto_save: Option<bool>,
     auto_launch: Option<bool>,
-    fast_start: Option<bool>,
     language: Option<String>,
     rec_format: Option<String>,
     rec_fps: Option<u32>,
     rec_mic: Option<bool>,
     rec_system_audio: Option<bool>,
+    rec_mic_device: Option<String>,
+    rec_sys_device: Option<String>,
     rec_countdown: Option<bool>,
 }
 
@@ -114,9 +179,6 @@ pub async fn settings_set(window: WebviewWindow, patch: Patch) -> State {
         if let Some(v) = patch.auto_launch {
             s.auto_launch = v;
         }
-        if let Some(v) = patch.fast_start {
-            s.fast_start = v;
-        }
         if let Some(v) = patch.rec_format.as_deref().filter(|v| matches!(*v, "mp4" | "gif")) {
             s.rec_format = v.to_string();
         }
@@ -129,18 +191,21 @@ pub async fn settings_set(window: WebviewWindow, patch: Patch) -> State {
         if let Some(v) = patch.rec_system_audio {
             s.rec_system_audio = v;
         }
+        if let Some(v) = patch.rec_mic_device.filter(|v| v.len() <= 512) {
+            s.rec_mic_device = v;
+        }
+        if let Some(v) = patch.rec_sys_device.filter(|v| v.len() <= 512) {
+            s.rec_sys_device = v;
+        }
         if let Some(v) = patch.rec_countdown {
             s.rec_countdown = v;
         }
-        if let Some(v) = patch.language.as_deref().filter(|v| matches!(*v, "auto" | "ru" | "en")) {
+        if let Some(v) = patch.language.as_deref().filter(|v| matches!(*v, "ru" | "en")) {
             s.language = v.to_string();
         }
     });
     if let Some(v) = patch.auto_launch {
         set_autostart(v);
-    }
-    if patch.fast_start.is_some() {
-        capture::rebuild_pool();
     }
     if patch.language.is_some() {
         i18n::set_language(&settings::get().language);
@@ -152,10 +217,9 @@ pub async fn settings_set(window: WebviewWindow, patch: Patch) -> State {
 
 #[tauri::command]
 pub async fn settings_set_hotkey(window: WebviewWindow, name: String, accel: String) -> HotkeyResult {
-    let name = match name.as_str() {
-        "screenshot" if from_settings(&window) => Name::Screenshot,
-        "record" if from_settings(&window) => Name::Record,
-        _ => return shortcuts::set_hotkey(Name::Screenshot, ""), // заведомо «invalid»
+    let name = match Name::from_key(&name) {
+        Some(n) if from_settings(&window) => n,
+        _ => return shortcuts::set_hotkey(Name::Screenshot, ""), // deliberately "invalid"
     };
     let res = shortcuts::set_hotkey(name, &accel);
     if res.is_ok() {

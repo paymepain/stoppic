@@ -3,8 +3,8 @@ import './rec.css'
 import type { RecCommand, RecConfig, RecUiState } from './shared/ipc'
 import { icon } from './shared/icons'
 
-// Панель записи. Захват экрана, звук и кодирование делает Rust;
-// здесь только отсчёт, таймер и кнопки.
+// Recording panel. Screen capture, audio and encoding are done by Rust;
+// here there is only the countdown, the timer and the buttons.
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => document.getElementById(id) as T
 const pill = $('pill')
@@ -20,11 +20,11 @@ btnCancel.innerHTML = icon('close')
 
 let cfg: RecConfig
 let cancelled = false
-let capturing = false // Rust уже пишет
+let capturing = false // Rust is already recording
 let stopping = false
 let paused = false
-let accumulated = 0 // накопленное время записи без пауз, мс
-let runStart = 0 // начало текущего отрезка записи
+let accumulated = 0 // accumulated recording time excluding pauses, ms
+let runStart = 0 // start of the current recording segment
 let timerId: number | undefined
 
 const s = (key: string): string => cfg.strings[key] ?? key
@@ -60,7 +60,7 @@ function resume(): void {
   window.api.recCommand('resume')
 }
 
-/** Rust сохранит файл и сам закроет панель */
+/** Rust saves the file and closes the panel itself */
 function stop(): void {
   if (stopping || !capturing) return
   stopping = true
@@ -70,7 +70,7 @@ function stop(): void {
   window.api.recCommand('stop')
 }
 
-/** Без сохранения: Rust остановит запись, удалит файл и закроет панель */
+/** Without saving: Rust stops the recording, deletes the file and closes the panel */
 function cancel(): void {
   if (stopping || cancelled) return
   cancelled = true
@@ -97,7 +97,7 @@ async function main(): Promise<void> {
   btnPause.addEventListener('click', () => (paused ? resume() : pause()))
   btnStop.addEventListener('click', stop)
   btnCancel.addEventListener('click', cancel)
-  // Панель без рамки: тянем за любое место, кроме кнопок
+  // Frameless panel: drag by any spot except the buttons
   pill.addEventListener('mousedown', (e) => {
     if (e.button === 0 && !(e.target as HTMLElement).closest('button')) window.api.startDrag()
   })
@@ -111,8 +111,8 @@ async function main(): Promise<void> {
     }
   }
   if (cancelled) return
-  if (!(await window.api.recStart())) return // Rust уже показал ошибку и закрывает панель
-  if (cancelled) return // отменили, пока запись запускалась
+  if (!(await window.api.recStart())) return // Rust has already shown the error and is closing the panel
+  if (cancelled) return // cancelled while the recording was starting
 
   capturing = true
   runStart = performance.now()
