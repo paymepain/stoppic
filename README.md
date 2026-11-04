@@ -1,95 +1,95 @@
 # StopPic
 
-[English](README.en.md) | **Русский**
+**English** | [Русский](README.ru.md)
 
-Бесплатная программа для скриншотов и записи экрана. Выделите область, добавьте подпись или стрелку, и картинка уже в буфере обмена. Экран можно записать в MP4 или GIF вместе со звуком.
+A free app for screenshots and screen recording. Select an area, add a label or an arrow, and the picture is already on your clipboard. You can also record your screen to MP4 or GIF, with sound.
 
-Программа лёгкая: установщик весит несколько мегабайт, а сама она работает в трее и почти не занимает память. В интернет ничего не отправляет.
+It's lightweight: the installer is just a few megabytes, and the app sits quietly in the tray using very little memory. It never sends anything to the internet.
 
-## Установка
+## Installation
 
-1. Откройте страницу [Releases](https://github.com/paymepain/stoppic/releases/latest) и скачайте файл `StopPic_…_x64-setup.exe`.
-2. Запустите его и следуйте шагам установщика. Первым делом он спросит язык: английский или русский. Этот же язык получит и программа, потом его можно сменить в настройках.
+1. Go to the [Releases](https://github.com/paymepain/stoppic/releases/latest) page and download `StopPic_…_x64-setup.exe`.
+2. Run it and follow the installer steps. The first thing it asks is the language, English or Russian. The app starts in that language too, and you can change it later in the settings.
 
-Нужна Windows 10 или 11. Если в системе нет компонента Microsoft Edge WebView2 (обычно он уже есть), установщик скачает его сам.
+Requires Windows 10 or 11. If the Microsoft Edge WebView2 component is missing (it's usually already there), the installer downloads it automatically.
 
-Windows может показать окно «Система Windows защитила ваш компьютер». Так бывает с новыми программами без платной цифровой подписи. Нажмите «Подробнее» → «Выполнить в любом случае».
+Windows may show a "Windows protected your PC" warning. This happens with new apps that don't have a paid digital signature. Click "More info" → "Run anyway".
 
-## Скриншоты
+## Screenshots
 
-Нажмите `Ctrl+Alt+A`, и изображение на экране замрёт. Выделите мышью нужную область. Рамку можно двигать и тянуть за края.
+Press `Ctrl+Alt+A` and the screen freezes. Select the area you need with the mouse. The selection can be moved and resized by its edges.
 
-Когда нужно быстро: `Ctrl+Alt+Shift+A` копирует весь экран, а `Ctrl+Alt+W` — активное окно. Снимок сразу попадает в буфер обмена, без выделения и пометок.
+In a hurry? `Ctrl+Alt+Shift+A` copies the whole screen and `Ctrl+Alt+W` copies the active window. The shot goes straight to the clipboard, no selection or annotations.
 
-- `Enter`, `Ctrl+C` или двойной клик — скопировать в буфер обмена
-- `Ctrl+S` — сохранить в файл
-- `Esc` или правая кнопка мыши — отменить
-- `Ctrl+A` — выделить весь монитор; стрелки двигают рамку на 1 px, с `Shift` — на 10 px
+- `Enter`, `Ctrl+C` or double-click: copy to clipboard
+- `Ctrl+S`: save to a file
+- `Esc` or right mouse button: cancel
+- `Ctrl+A`: select the whole monitor; arrow keys move the selection by 1 px, with `Shift` by 10 px
 
-Файлы сохраняются в папку `Изображения\Screenshots`. Клик по уведомлению открывает папку с файлом.
+Files are saved to `Pictures\Screenshots`. Clicking the notification opens the folder with the file.
 
-### Пометки на снимке
+### Annotations
 
-Под выделением появляется панель инструментов:
+A toolbar appears below the selection:
 
-| Инструмент | Клавиша |
+| Tool | Key |
 |---|---|
-| Выбор и перемещение | `V` |
-| Перо | `P` |
-| Стрелка | `A` |
-| Рамка | `R` |
-| Маркер | `M` |
-| Текст | `T` |
-| Размытие (чтобы скрыть пароль, лицо и т. п.) | `B` |
-| Нумерация 1, 2, 3… | `N` |
+| Select and move | `V` |
+| Pen | `P` |
+| Arrow | `A` |
+| Rectangle | `R` |
+| Highlighter | `M` |
+| Text | `T` |
+| Blur (to hide a password, a face, etc.) | `B` |
+| Numbering 1, 2, 3… | `N` |
 
-- Цвет и толщина запоминаются для каждого инструмента отдельно
-- Если зажать `Shift`, стрелка ложится ровно под углом, кратным 45°, а рамка получается квадратной
-- Инструментом «Выбор» любую пометку можно передвинуть, перекрасить или удалить (`Delete`). Текст правится двойным кликом
-- `Ctrl+V` вставляет картинку из буфера обмена, кнопка на панели — из файла
-- `Ctrl+Z` — отменить, `Ctrl+Y` — повторить
+- Color and size are remembered separately for each tool
+- Hold `Shift` to snap arrows to multiples of 45° and draw rectangles as squares
+- With the Select tool you can move, recolor or delete (`Delete`) any annotation. Double-click text to edit it
+- `Ctrl+V` pastes an image from the clipboard, the toolbar button inserts one from a file
+- `Ctrl+Z` to undo, `Ctrl+Y` to redo
 
-**Закрепить:** снимок остаётся маленьким окном поверх всех окон. Удобно, когда нужно что-то держать перед глазами. Закрыть его можно крестиком или клавишей `Esc`.
+**Pin:** keeps the screenshot as a small window on top of all others. Handy when you need something in front of you. Close it with the cross or `Esc`.
 
-## Запись экрана
+## Screen recording
 
-1. Нажмите `Ctrl+Alt+R` и выделите область (`Ctrl+A` — весь экран).
-2. Если нужно, включите микрофон и звук компьютера.
-3. Нажмите красную кнопку или `Enter`.
+1. Press `Ctrl+Alt+R` and select an area (`Ctrl+A` for the whole screen).
+2. Turn on the microphone and computer sound if you need them.
+3. Press the red button or `Enter`.
 
-`Ctrl+Alt+Shift+R` начинает запись всего экрана сразу, без выбора области.
+`Ctrl+Alt+Shift+R` starts recording the whole screen right away, with no area selection.
 
-После отсчёта 3-2-1 появится небольшая панель с таймером, паузой и кнопкой «Стоп». Панель можно перетащить, в запись она не попадает. Остановить запись можно и тем же сочетанием клавиш. Пока идёт запись, значок в трее красный.
+After a 3-2-1 countdown a small panel appears with a timer, pause and stop. You can drag the panel around, and it won't appear in the recording. You can also stop with the same shortcut. The tray icon turns red while recording.
 
-Формат (MP4 или GIF) и частота кадров (15, 30 или 60) выбираются в настройках.
+Format (MP4 or GIF) and frame rate (15, 30 or 60) are chosen in settings.
 
-## Настройки
+## Settings
 
-Открываются из меню в трее («Настройки…»). Изменения применяются сразу.
+Open them from the tray menu ("Settings…"). Changes apply immediately.
 
-- **Горячие клавиши:** нажмите на поле и введите новое сочетание. Если оно уже занято другой программой, StopPic предупредит. `↺` возвращает исходное сочетание
-- **Сохранение:** папка для снимков и «Сохранять файл при копировании»
-- **Запись экрана:** формат, частота кадров, запись микрофона и звука системы, выбор микрофона и устройства вывода, отсчёт перед стартом
-- **Общие:** запуск вместе с Windows, язык
+- **Hotkeys:** click a field and press a new shortcut. If another app already uses it, StopPic will tell you. `↺` restores the default
+- **Saving:** screenshots folder and "Save a file when copying"
+- **Screen recording:** format, frame rate, microphone and system audio, choice of microphone and output device, countdown before start
+- **General:** launch at login, language
 
-Если звук пишется не с того устройства (например, игра идёт в наушники, а StopPic слушает колонки), выберите нужное устройство в разделе «Запись экрана». «Как в Windows» означает устройство по умолчанию из системных настроек.
+If the sound comes from the wrong device (say, a game plays through headphones while StopPic listens to the speakers), pick the device in the "Screen recording" section. "Windows default" means the device chosen in system settings.
 
-Светлая или тёмная тема выбирается автоматически, как в Windows.
+The light or dark theme follows your Windows setting.
 
-## Конфиденциальность
+## Privacy
 
-StopPic ничего не отправляет по сети. Снимки, записи и настройки хранятся только на вашем компьютере.
+StopPic sends nothing over the network. Screenshots, recordings and settings stay on your computer only.
 
-## Лицензия
+## License
 
-StopPic бесплатен, исходный код открыт под лицензией [MIT](LICENSE.txt).
-## Поддержать автора
+StopPic is free, and its source code is open under the [MIT](LICENSE.txt) license.
+## Support the author
 
-Если программа пригодилась, поставьте ⭐ репозиторию на GitHub: так её проще найти другим. А если есть желание поддержать развитие финансово, можно воспользоваться любым способом ниже.
+If you find the app useful, give the repository a ⭐ on GitHub: it helps others find it. And if you'd like to support development financially, you can use any of the options below.
 
 ### DonationAlerts
 
-<a href="https://www.donationalerts.com/r/paymepain"><img src="docs/qr/donationalerts.svg" width="200" alt="QR-код DonationAlerts"></a>
+<a href="https://www.donationalerts.com/r/paymepain"><img src="docs/qr/donationalerts.svg" width="200" alt="DonationAlerts QR code"></a>
 
 https://www.donationalerts.com/r/paymepain
 
@@ -97,7 +97,7 @@ https://www.donationalerts.com/r/paymepain
 
 ### Telegram (TON)
 
-<img src="docs/qr/ton.svg" width="200" alt="QR-код TON">
+<img src="docs/qr/ton.svg" width="200" alt="TON QR code">
 
 `UQBRPrNCafN_d41-4xq9FmCvPx0V94t6la3dY7G0l5_jOvRD`
 
@@ -105,6 +105,6 @@ https://www.donationalerts.com/r/paymepain
 
 ### TronLink (TRON)
 
-<img src="docs/qr/tron.svg" width="200" alt="QR-код TRON">
+<img src="docs/qr/tron.svg" width="200" alt="TRON QR code">
 
 `TG3nnaoCSwct8YCZa8ciYHK3QUe7QETJiE`
