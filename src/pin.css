@@ -9,7 +9,7 @@ html, body {
   -webkit-user-select: none;
 }
 
-/* Окно без рамки: тащим за само изображение */
+/* Frameless window: drag by the image itself */
 #drag {
   width: 100%;
   height: 100%;

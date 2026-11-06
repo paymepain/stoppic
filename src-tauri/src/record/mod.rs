@@ -1,4 +1,4 @@
-// Запись экрана: состояние, панель (HUD) и сохранение. Сам захват в engine_*.
+// Screen recording: state, the HUD panel and saving. The capture itself lives in engine_*.
 
 use crate::capture::{self, Monitor, Rect};
 use crate::i18n::{self, t, t_with};
@@ -45,11 +45,11 @@ enum Phase {
     Processing,
 }
 
-/// Что и как записывать
+/// What to record and how
 #[derive(Clone)]
 pub struct Spec {
     pub mon: Monitor,
-    /// Область в физических пикселях монитора; размеры чётные (так нужно H.264)
+    /// Region in physical monitor pixels; dimensions are even (H.264 requires it)
     pub x: u32,
     pub y: u32,
     pub w: u32,
@@ -58,7 +58,29 @@ pub struct Spec {
     pub gif: bool,
     pub mic: bool,
     pub system_audio: bool,
+    /// WASAPI device ids; an empty string means the default device
+    pub mic_device: String,
+    pub sys_device: String,
     pub file: PathBuf,
+}
+
+/// Audio device for the list in settings
+#[derive(Serialize, Clone)]
+pub struct AudioDevice {
+    pub id: String,
+    pub name: String,
+}
+
+/// Active devices: microphones and output devices (for system audio).
+pub fn audio_devices() -> (Vec<AudioDevice>, Vec<AudioDevice>) {
+    #[cfg(windows)]
+    {
+        engine::audio_devices()
+    }
+    #[cfg(not(windows))]
+    {
+        (Vec::new(), Vec::new())
+    }
 }
 
 type Prepared = Result<(engine::Engine, Vec<&'static str>), String>;
@@ -66,7 +88,7 @@ type Prepared = Result<(engine::Engine, Vec<&'static str>), String>;
 struct Job {
     spec: Spec,
     engine: Option<engine::Engine>,
-    /// Подготовка движка идёт во время отсчёта, результат придёт сюда
+    /// Engine preparation runs during the countdown; the result arrives here
     prep: Option<Receiver<Prepared>>,
 }
 
@@ -78,9 +100,9 @@ struct State {
 static ST: Mutex<State> = Mutex::new(State { phase: Phase::Idle, job: None });
 
 const HUD: &str = "rec";
-/// Пунктирная рамка вокруг записываемой области
+/// Dashed frame around the recorded region
 const FRAME: &str = "rec-frame";
-/// Высота как у панели оверлея: кнопки 34 + отступы по 4
+/// Same height as the overlay bar: 34 for buttons + 4 padding on each side
 const HUD_W: f64 = 260.0;
 const HUD_H: f64 = 42.0;
 
@@ -100,7 +122,7 @@ fn set_phase(next: Phase) {
     tray::set_recording(is_recording());
 }
 
-/// Идёт отсчёт, запись или пауза (обработка после остановки сюда не входит).
+/// Countdown, recording or pause is in progress (post-stop processing is not included).
 pub fn is_recording() -> bool {
     matches!(phase(), Phase::Countdown | Phase::Recording | Phase::Paused)
 }
@@ -113,8 +135,28 @@ fn send_cmd(cmd: &str) {
     let _ = crate::app().emit_to(EventTarget::webview_window(HUD), "rec:cmd", cmd);
 }
 
-/// Хоткей и пункт трея: начать выбор области, а во время записи остановить.
+/// Hotkey and tray item: start region selection, or stop while recording.
 pub fn toggle() {
+    toggle_with(|| capture::start_capture(capture::Mode::Record));
+}
+
+/// "Record full screen" hotkey: no region selection, the screen under the cursor. Stops while recording.
+pub fn toggle_full() {
+    toggle_with(|| {
+        if capture::is_active() {
+            return; // overlay is open: it decides what to record
+        }
+        let Some(mon) = capture::monitor_under_cursor() else {
+            notify::notify(&t("recFailed"), None);
+            return;
+        };
+        let st = settings::get();
+        let rect = Rect { x: 0.0, y: 0.0, width: mon.css_w(), height: mon.css_h() };
+        begin(mon, rect, st.rec_mic, st.rec_system_audio);
+    });
+}
+
+fn toggle_with(start: impl FnOnce()) {
     match phase() {
         Phase::Processing => notify::notify(&t("recBusy"), None),
         Phase::Countdown => {
@@ -126,19 +168,19 @@ pub fn toggle() {
         }
         Phase::Recording | Phase::Paused => {
             if hud().is_some() {
-                send_cmd("stop"); // панель покажет «Обработка…» и вызовет rec_command('stop')
+                send_cmd("stop"); // the panel shows "Processing..." and calls rec_command('stop')
             } else {
                 stop();
             }
         }
-        Phase::Idle => capture::start_capture(capture::Mode::Record),
+        Phase::Idle => start(),
     }
 }
 
-// ───────────────────────── Панель записи (HUD) ─────────────────────────
+// ───────────────────────── Recording panel (HUD) ─────────────────────────
 
-/// Там же, где была панель оверлея (placeBar в overlay.ts): под областью у правого края,
-/// не влезла — над областью, и только потом внутрь. На Windows панель всё равно исключена из кадра.
+/// Same place as the overlay bar (placeBar in overlay.ts): below the region at the right edge,
+/// if it does not fit, above the region, and only then inside it. On Windows the panel is excluded from the frame anyway.
 fn hud_position(spec: &Spec) -> (i32, i32, u32, u32) {
     let m = &spec.mon;
     let k = m.scale;
@@ -151,7 +193,7 @@ fn hud_position(spec: &Spec) -> (i32, i32, u32, u32) {
         y = ry - hh - gap;
     }
     if y < by + edge {
-        y = ry + rh - hh - gap; // область занимает весь экран
+        y = ry + rh - hh - gap; // region covers the whole screen
     }
     let y = y.max(by + edge).min(by + bh - hh - edge);
     let x = (rx + rw - hw).max(bx + edge).min(bx + bw - hw - edge);
@@ -181,13 +223,13 @@ fn create_hud(spec: &Spec) -> Option<WebviewWindow> {
         let _ = win.set_size(PhysicalSize::new(w, h));
     }
     #[cfg(windows)]
-    crate::winapi::exclude_from_capture(&win); // панель не попадает в запись
+    crate::winapi::exclude_from_capture(&win); // the panel does not appear in the recording
     let _ = win.show();
     Some(win)
 }
 
-/// Рамка чуть снаружи области (или по её краю, если область во весь экран).
-/// Сквозь неё проходят клики, и в запись она не попадает.
+/// Frame just outside the region (or along its edge if the region is full screen).
+/// Clicks pass through it, and it does not appear in the recording.
 fn create_frame(spec: &Spec) {
     let m = &spec.mon;
     let pad = (4.0 * m.scale).round() as i32;
@@ -212,7 +254,7 @@ fn create_frame(spec: &Spec) {
     let win = match built {
         Ok(w) => w,
         Err(e) => {
-            eprintln!("[record] рамка: {e}"); // без рамки запись всё равно работает
+            eprintln!("[record] рамка: {e}"); // recording works without the frame anyway
             return;
         }
     };
@@ -239,14 +281,14 @@ fn close_hud() {
     }
 }
 
-// ───────────────────────── Старт ─────────────────────────
+// ───────────────────────── Start ─────────────────────────
 
-/// Область выбрана в оверлее (CSS-пиксели монитора).
+/// Region selected in the overlay (monitor CSS pixels).
 pub fn begin(mon: Monitor, rect: Rect, mic: bool, system_audio: bool) {
     if phase() != Phase::Idle || rect.width < 16.0 || rect.height < 16.0 {
         return;
     }
-    // Выбор в оверлее становится умолчанием на следующий раз
+    // The overlay choice becomes the default for next time
     settings::update(|s| {
         s.rec_mic = mic;
         s.rec_system_audio = system_audio;
@@ -263,18 +305,31 @@ pub fn begin(mon: Monitor, rect: Rect, mic: bool, system_audio: bool) {
     let w = (((rect.width * k).round() as u32).min(mon.w - x).max(2)) & !1;
     let h = (((rect.height * k).round() as u32).min(mon.h - y).max(2)) & !1;
     let file = std::env::temp_dir().join(format!("stoppic-{}.part", chrono::Local::now().timestamp_millis()));
-    let spec = Spec { mon, x, y, w, h, fps: st.rec_fps, gif, mic: mic && !gif, system_audio: system_audio && !gif, file };
+    let spec = Spec {
+        mon,
+        x,
+        y,
+        w,
+        h,
+        fps: st.rec_fps,
+        gif,
+        mic: mic && !gif,
+        system_audio: system_audio && !gif,
+        mic_device: st.rec_mic_device,
+        sys_device: st.rec_sys_device,
+        file,
+    };
 
-    // Рамка раньше панели: панель должна оказаться поверх неё
+    // Frame before the panel: the panel must end up on top of it
     create_frame(&spec);
     let hud_ok = create_hud(&spec).is_some();
 
-    // Звук и кодировщик готовим, пока идёт отсчёт: после него остаётся только запустить кадры
+    // Audio and the encoder are prepared during the countdown: afterwards only the frames need starting
     let (tx, rx) = mpsc::channel::<Prepared>();
     let prep_spec = spec.clone();
     thread::spawn(move || {
         let res = engine::Engine::prepare(&prep_spec);
-        // Запись отменили, пока готовились: движок никому не нужен, останавливаем
+        // Recording was cancelled while preparing: nobody needs the engine, stop it
         if let Err(mpsc::SendError(Ok((e, _)))) = tx.send(res) {
             e.cancel();
         }
@@ -287,16 +342,16 @@ pub fn begin(mon: Monitor, rect: Rect, mic: bool, system_audio: bool) {
     set_phase(Phase::Countdown);
 }
 
-// ───────────────────────── Завершение ─────────────────────────
+// ───────────────────────── Finishing ─────────────────────────
 
-/// Завершить без сохранения: отмена или ошибка. Временный файл удаляется.
+/// Finish without saving: cancel or error. The temp file is deleted.
 fn discard() {
     let job = ST.lock().unwrap().job.take();
     if let Some(job) = job {
         if let Some(e) = job.engine {
             e.cancel();
         }
-        // Подготовка ещё может идти: дождёмся её в фоне, остановим движок и удалим файл
+        // Preparation may still be running: wait for it in the background, stop the engine and delete the file
         let file = job.spec.file.clone();
         let prep = job.prep;
         thread::spawn(move || {
@@ -339,7 +394,7 @@ fn stop() {
     });
 }
 
-/// Запись готова в нужном формате, остаётся положить её в папку снимков.
+/// The recording is ready in the target format; all that remains is to put it in the screenshots folder.
 fn finalize(spec: Spec, res: Result<(), String>) {
     let size = std::fs::metadata(&spec.file).map(|m| m.len()).unwrap_or(0);
     if let Err(e) = &res {
@@ -359,7 +414,7 @@ fn finalize(spec: Spec, res: Result<(), String>) {
     match placed {
         Ok(out) => notify::notify(&t("recSaved"), Some(files::reveal(out))),
         Err(e) => {
-            // Временный файл не удаляем: из него можно вернуть запись вручную
+            // Keep the temp file: the recording can be recovered from it manually
             eprintln!("[record] не удалось сохранить запись: {e}");
             let file = spec.file.to_string_lossy().into_owned();
             notify::notify(&t_with("recFailedKept", &[("file", &file)]), Some(files::reveal(spec.file.clone())));
@@ -368,7 +423,7 @@ fn finalize(spec: Spec, res: Result<(), String>) {
 }
 
 pub fn shutdown() {
-    // Недописанная запись остаётся во временной папке
+    // An unfinished recording stays in the temp folder
     if let Some(job) = ST.lock().unwrap().job.take() {
         if let Some(e) = job.engine {
             e.cancel();
@@ -379,7 +434,7 @@ pub fn shutdown() {
     }
 }
 
-// ───────────────────────── Команды панели ─────────────────────────
+// ───────────────────────── Panel commands ─────────────────────────
 
 #[derive(Serialize)]
 pub struct RecConfig {
@@ -406,15 +461,15 @@ pub async fn rec_get_config(window: WebviewWindow) -> Option<RecConfig> {
     })
 }
 
-/// Отсчёт закончился: запускаем захват. false: не получилось (уведомление уже показано).
+/// Countdown finished: start the capture. false: it failed (the notification has already been shown).
 #[tauri::command]
 pub async fn rec_start(window: WebviewWindow) -> bool {
     if !from_hud(&window) || phase() != Phase::Countdown {
         return false;
     }
     let Some(rx) = ST.lock().unwrap().job.as_mut().and_then(|j| j.prep.take()) else { return false };
-    // Ждём подготовку без блокировки состояния: хоткей и трей в это время работают.
-    // Обычно она уже готова: отсчёт длится 3 секунды
+    // Wait for preparation without holding the state lock: the hotkey and tray keep working meanwhile.
+    // Usually it is already done: the countdown lasts 3 seconds
     let res = tauri::async_runtime::spawn_blocking(move || {
         let t0 = std::time::Instant::now();
         let prepared = rx.recv_timeout(Duration::from_secs(15)).unwrap_or_else(|_| Err("подготовка не уложилась в 15 с".into()));
@@ -444,11 +499,11 @@ pub async fn rec_start(window: WebviewWindow) -> bool {
                 }
             };
             if let Some(engine) = rejected {
-                engine.cancel(); // отменили, пока запускались
+                engine.cancel(); // cancelled while starting
                 return false;
             }
             set_phase(Phase::Recording);
-            // Предупреждения без остановки записи (например, нет микрофона)
+            // Warnings that do not stop the recording (e.g. no microphone)
             for w in warnings {
                 notify::notify(&t(w), None);
             }

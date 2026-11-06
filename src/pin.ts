@@ -10,7 +10,7 @@ btnClose.addEventListener('click', () => window.api.pinClose())
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') window.api.pinClose()
 })
-// Окно без рамки: тащим за само изображение
+// Frameless window: drag by the image itself
 document.getElementById('drag')?.addEventListener('mousedown', (e) => {
   if (e.button === 0) window.api.startDrag()
 })

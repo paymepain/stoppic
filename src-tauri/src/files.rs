@@ -7,7 +7,7 @@ pub fn timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H-%M-%S").to_string()
 }
 
-/// Новый файл «Имя.ext», затем «Имя (2).ext» и т.д. Существующие файлы не перезаписываются.
+/// New file "Name.ext", then "Name (2).ext" and so on. Existing files are never overwritten.
 pub fn create_unique(dir: &Path, base: &str, ext: &str) -> io::Result<(File, PathBuf)> {
     fs::create_dir_all(dir)?;
     for n in 1..=99 {
@@ -32,7 +32,7 @@ pub fn write_unique(dir: &Path, base: &str, ext: &str, data: &[u8]) -> io::Resul
     Ok(path)
 }
 
-/// Перенос между дисками не работает через rename, тогда копируем.
+/// Moving across drives doesn't work via rename, so copy in that case.
 pub fn move_file(from: &Path, to: &Path) -> io::Result<()> {
     if fs::rename(from, to).is_ok() {
         return Ok(());
@@ -42,7 +42,7 @@ pub fn move_file(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Папку можно создать и в неё можно писать.
+/// The folder can be created and is writable.
 pub fn usable_dir(dir: &Path) -> bool {
     if fs::create_dir_all(dir).is_err() {
         return false;

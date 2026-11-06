@@ -1,7 +1,7 @@
-// Собирает src-tauri/THIRD-PARTY-NOTICES.txt: тексты лицензий всех сторонних компонентов, которые
-// попадают в программу для Windows. Ничего не компилирует: берёт исходники зависимостей,
-// которые Cargo уже скачал (`cargo fetch`), и пакеты из node_modules.
-// Запуск: npm run notices
+// Builds src-tauri/THIRD-PARTY-NOTICES.txt: license texts of all third-party components that
+// ship in the Windows build. Compiles nothing: it uses the dependency sources Cargo has
+// already downloaded (`cargo fetch`) and the packages in node_modules.
+// Run: npm run notices
 
 import { execFileSync } from 'node:child_process'
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
@@ -34,7 +34,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.`
 
-// Тексты этих лицензий не содержат имён авторов, поэтому их можно взять у другого пакета
+// These license texts contain no author names, so they can be taken from another package
 const VERBATIM = new Set(['MPL-2.0', 'Apache-2.0', 'BSL-1.0'])
 
 const meta = JSON.parse(
@@ -45,7 +45,7 @@ const meta = JSON.parse(
   ).toString()
 )
 
-// Только то, что попадает в программу: обычные зависимости, без build- и dev-зависимостей
+// Only what ships in the program: normal dependencies, without build- and dev-dependencies
 const nodes = new Map(meta.resolve.nodes.map((n) => [n.id, n]))
 const shipped = new Set()
 const queue = [meta.resolve.root]
@@ -65,7 +65,7 @@ function licenseTexts(dir) {
     .map((e) => ({ name: e.name, text: readFileSync(join(dir, e.name), 'utf8').replace(/\r\n/g, '\n').trim() }))
 }
 
-// «MIT OR Apache-2.0» и т.п.: лицензию можно выбрать, берём MIT, она короче
+// "MIT OR Apache-2.0" and the like: the license is a choice, we take MIT, it is shorter
 function pickMit(license, texts) {
   if (!/\bOR\b|\//.test(license ?? '') || !/\bMIT\b/.test(license)) return texts
   const mit = texts.filter((t) => /mit/i.test(t.name))
@@ -79,7 +79,7 @@ function chosenLicense(license) {
 const entries = []
 
 for (const pkg of meta.packages) {
-  if (!shipped.has(pkg.id) || pkg.source === null) continue // свой код пропускаем
+  if (!shipped.has(pkg.id) || pkg.source === null) continue // skip our own code
   entries.push({
     name: pkg.name,
     version: pkg.version,
@@ -90,7 +90,7 @@ for (const pkg of meta.packages) {
   })
 }
 
-// Из npm в программу попадает только то, что лежит в dependencies (остальное нужно лишь для сборки)
+// From npm, only what is listed in dependencies ships in the program (the rest is needed only for the build)
 const npmDeps = Object.keys(JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).dependencies ?? {})
 for (const name of npmDeps) {
   const dir = join(root, 'node_modules', name)
@@ -99,8 +99,8 @@ for (const name of npmDeps) {
   entries.push({ name, version: pkg.version, license: pkg.license ?? 'см. текст', url, authors: [], texts: pickMit(pkg.license, licenseTexts(dir)) })
 }
 
-// В части пакетов на crates.io нет файла лицензии. Берём текст у пакета из того же репозитория
-// с той же лицензией, затем у любого пакета для лицензий без имён авторов, затем шаблон MIT
+// Some crates.io packages have no license file. Take the text from a package in the same repository
+// with the same license, then from any package for licenses without author names, then the MIT template
 const unresolved = []
 for (const e of entries.filter((e) => !e.texts.length)) {
   const license = chosenLicense(e.license)
@@ -119,7 +119,7 @@ for (const e of entries.filter((e) => !e.texts.length)) {
 
 entries.sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version))
 
-// Одинаковые тексты (например, Apache-2.0 у сотен пакетов) печатаем один раз
+// Identical texts (e.g. Apache-2.0 shared by hundreds of packages) are printed once
 const groups = new Map()
 for (const e of entries) {
   const key = e.texts.map((t) => t.text).join('\n\n')

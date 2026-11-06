@@ -34,7 +34,7 @@ body {
   pointer-events: none;
 }
 
-/* Выделение: затемнение вокруг рисуется гигантской тенью */
+/* Selection: the dimming around it is drawn with a giant box-shadow */
 #sel {
   position: fixed;
   outline: 1px solid #f03a2e;
@@ -81,7 +81,7 @@ body.tool-text.over-text #sel { cursor: move; }
 .h-sw { left: -5px; bottom: -5px; cursor: nesw-resize; }
 .h-w  { left: -5px; top: calc(50% - 5px); cursor: ew-resize; }
 
-/* Панель */
+/* Toolbar */
 #bar {
   position: fixed;
   padding: 4px;
@@ -161,7 +161,7 @@ body.tool-text.over-text #sel { cursor: move; }
 .sz:hover { background: rgba(255, 255, 255, 0.12); }
 .sz.on { background: rgba(255, 255, 255, 0.22); }
 
-/* Редактор текста */
+/* Text editor */
 .txt {
   position: fixed;
   min-width: 40px;
@@ -180,7 +180,7 @@ body.tool-text.over-text #sel { cursor: move; }
 #bar button.rec { background: #f03a2e; }
 #bar button.rec:hover { background: #d92e23; }
 
-/* Свой цвет */
+/* Custom color */
 .dot.picker {
   display: grid;
   place-items: center;

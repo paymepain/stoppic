@@ -1,6 +1,6 @@
-// Запись на Windows без внешних программ:
-// картинка: Windows Graphics Capture, видео: H.264 + AAC встроенным кодировщиком Media Foundation,
-// звук: WASAPI (системный звук через loopback и микрофон), GIF: крейт image.
+// Recording on Windows without external programs:
+// picture: Windows Graphics Capture, video: H.264 + AAC via the built-in Media Foundation encoder,
+// audio: WASAPI (system audio via loopback, plus microphone), GIF: the image crate.
 
 use super::Spec;
 use image::{Delay, Frame as GifFrame, RgbaImage};
@@ -31,31 +31,49 @@ const SAMPLE_RATE: u32 = 48_000;
 
 type Error = Box<dyn std::error::Error + Send + Sync>;
 
-/// Общее для потока захвата, звука и управления
+/// Shared between the capture, audio and control threads
 #[derive(Default)]
 struct Shared {
     paused: AtomicBool,
-    /// Стоп видео
+    /// Stop video
     stopping: AtomicBool,
-    /// Первый кадр видео ушёл в кодировщик: от этого момента идут часы звука
+    /// First video frame went to the encoder: the audio clock runs from this moment
     video_started: AtomicBool,
-    /// Стоп устройств звука (после дочитывания последних пакетов)
+    /// Stop audio devices (after draining the last packets)
     audio_stop: AtomicBool,
-    /// Стоп смесителя (после того как устройства остановлены)
+    /// Stop the mixer (after the devices have stopped)
     mixer_stop: AtomicBool,
 }
 
-// ───────────────────────── Звук ─────────────────────────
+// ───────────────────────── Audio ─────────────────────────
 
-/// Очередь сэмплов одного источника: f32, стерео, 48 кГц
+/// Sample queue of one source: f32, stereo, 48 kHz
 type Queue = Arc<Mutex<VecDeque<f32>>>;
 
-/// Сколько звука может ждать в очереди сверх нужного. Больше: срезаем старое, иначе звук начнёт отставать
-const MAX_BACKLOG: usize = (SAMPLE_RATE as usize / 10) * 2; // 100 мс, стерео
+/// How much audio may wait in the queue beyond what is needed. Above that we drop the oldest, otherwise audio starts lagging
+const MAX_BACKLOG: usize = (SAMPLE_RATE as usize / 10) * 2; // 100 ms, stereo
 
-/// Поток захвата WASAPI. loopback: звук системы, иначе микрофон.
-/// Возвращается, когда устройство открыто (или не открылось).
-fn start_audio_source(loopback: bool, shared: Arc<Shared>) -> Option<(Queue, JoinHandle<()>)> {
+/// Active devices for settings: (microphones, output devices).
+pub fn audio_devices() -> (Vec<super::AudioDevice>, Vec<super::AudioDevice>) {
+    let list = |dir: wasapi::Direction| -> Vec<super::AudioDevice> {
+        let Ok(enumerator) = wasapi::DeviceEnumerator::new() else { return Vec::new() };
+        let Ok(coll) = enumerator.get_device_collection(&dir) else { return Vec::new() };
+        (&coll)
+            .into_iter()
+            .filter_map(|d| {
+                let d = d.ok()?;
+                Some(super::AudioDevice { id: d.get_id().ok()?, name: d.get_friendlyname().ok()? })
+            })
+            .collect()
+    };
+    let _ = wasapi::initialize_mta();
+    (list(wasapi::Direction::Capture), list(wasapi::Direction::Render))
+}
+
+/// WASAPI capture thread. loopback: system audio, otherwise microphone.
+/// device_id: the device chosen in settings; empty or missing: the default device.
+/// Returns once the device is open (or failed to open).
+fn start_audio_source(loopback: bool, device_id: String, shared: Arc<Shared>) -> Option<(Queue, JoinHandle<()>)> {
     let queue: Queue = Arc::new(Mutex::new(VecDeque::new()));
     let (ready_tx, ready_rx) = mpsc::channel::<bool>();
     let q = queue.clone();
@@ -64,10 +82,20 @@ fn start_audio_source(loopback: bool, shared: Arc<Shared>) -> Option<(Queue, Joi
             let _ = wasapi::initialize_mta();
             let enumerator = wasapi::DeviceEnumerator::new()?;
             let dir = if loopback { wasapi::Direction::Render } else { wasapi::Direction::Capture };
-            let device = enumerator.get_default_device(&dir)?;
+            let chosen = (!device_id.is_empty())
+                .then(|| enumerator.get_device(&device_id).ok())
+                .flatten()
+                .filter(|d| d.get_state().is_ok_and(|s| s == wasapi::DeviceState::Active));
+            if !device_id.is_empty() && chosen.is_none() {
+                eprintln!("[record] выбранное устройство недоступно, берём по умолчанию: {device_id}");
+            }
+            let device = match chosen {
+                Some(d) => d,
+                None => enumerator.get_default_device(&dir)?,
+            };
             let mut client = device.get_iaudioclient()?;
             let format = wasapi::WaveFormat::new(32, 32, &wasapi::SampleType::Float, SAMPLE_RATE as usize, 2, None);
-            // Опрос, а не события: loopback без звука события не присылает
+            // Polling, not events: loopback sends no events when there is silence
             let mode = wasapi::StreamMode::PollingShared { autoconvert: true, buffer_duration_hns: 2_000_000 };
             client.initialize_client(&format, &wasapi::Direction::Capture, &mode)?;
             let capture = client.get_audiocaptureclient()?;
@@ -85,7 +113,7 @@ fn start_audio_source(loopback: bool, shared: Arc<Shared>) -> Option<(Queue, Joi
                     let b = [bytes.pop_front().unwrap(), bytes.pop_front().unwrap(), bytes.pop_front().unwrap(), bytes.pop_front().unwrap()];
                     q.push_back(f32::from_le_bytes(b));
                 }
-                // До старта видео звук не нужен: иначе он накопится и весь сдвинется
+                // Audio is not needed before video starts: otherwise it piles up and everything shifts
                 if !shared.video_started.load(Ordering::Relaxed) {
                     q.clear();
                 }
@@ -95,7 +123,7 @@ fn start_audio_source(loopback: bool, shared: Arc<Shared>) -> Option<(Queue, Joi
                 thread::sleep(Duration::from_millis(10));
                 read(&mut bytes)?;
             }
-            read(&mut bytes)?; // последние пакеты, иначе обрежется конец фразы
+            read(&mut bytes)?; // last packets, otherwise the end of a phrase gets cut off
             client.stop_stream()?;
             Ok(())
         };
@@ -110,8 +138,8 @@ fn start_audio_source(loopback: bool, shared: Arc<Shared>) -> Option<(Queue, Joi
     }
 }
 
-/// Смеситель: по часам отдаёт кодировщику ровно столько звука, сколько прошло времени.
-/// Тишину (нет данных от loopback) заполняет нулями, чтобы звук не отставал от видео.
+/// Mixer: by the clock, feeds the encoder exactly as much audio as time has elapsed.
+/// Fills silence (no data from loopback) with zeros so audio does not lag behind video.
 fn start_mixer(sources: Vec<Queue>, encoder: Arc<Mutex<Option<VideoEncoder>>>, shared: Arc<Shared>) -> JoinHandle<()> {
     thread::spawn(move || {
         let send = |mix: &[f32], pcm: &mut Vec<u8>| -> bool {
@@ -136,11 +164,11 @@ fn start_mixer(sources: Vec<Queue>, encoder: Arc<Mutex<Option<VideoEncoder>>>, s
             mix
         };
 
-        // Ждём первый кадр видео: звук и картинка начинаются в один момент
+        // Wait for the first video frame: audio and picture start at the same moment
         let wait_from = Instant::now();
         while !shared.video_started.load(Ordering::Relaxed) && !shared.mixer_stop.load(Ordering::Relaxed) {
             if wait_from.elapsed() > Duration::from_secs(3) {
-                shared.video_started.store(true, Ordering::Relaxed); // кадров нет, но звук писать надо
+                shared.video_started.store(true, Ordering::Relaxed); // no frames, but audio still has to be written
             }
             thread::sleep(Duration::from_millis(2));
         }
@@ -148,9 +176,9 @@ fn start_mixer(sources: Vec<Queue>, encoder: Arc<Mutex<Option<VideoEncoder>>>, s
             q.lock().unwrap().clear();
         }
 
-        let mut active = Duration::ZERO; // время записи без пауз
+        let mut active = Duration::ZERO; // recording time excluding pauses
         let mut last = Instant::now();
-        let mut sent: u64 = 0; // кадров (пар сэмплов) отдано
+        let mut sent: u64 = 0; // frames (sample pairs) sent
         let mut pcm: Vec<u8> = Vec::new();
         while !shared.mixer_stop.load(Ordering::Relaxed) {
             thread::sleep(Duration::from_millis(20));
@@ -158,11 +186,11 @@ fn start_mixer(sources: Vec<Queue>, encoder: Arc<Mutex<Option<VideoEncoder>>>, s
             if shared.paused.load(Ordering::Relaxed) {
                 last = now;
                 for q in &sources {
-                    q.lock().unwrap().clear(); // звук на паузе не нужен
+                    q.lock().unwrap().clear(); // audio is not needed while paused
                 }
                 continue;
             }
-            // После остановки видео время больше не идёт: в конце отдадим только остаток очередей
+            // After video stops, time no longer advances: at the end only the queue remainder is sent
             if !shared.stopping.load(Ordering::Relaxed) {
                 active += now - last;
             }
@@ -172,7 +200,7 @@ fn start_mixer(sources: Vec<Queue>, encoder: Arc<Mutex<Option<VideoEncoder>>>, s
             if frames == 0 {
                 continue;
             }
-            // Очередь не должна расти: лишнее (самое старое) срезаем, чтобы звук не уезжал от видео
+            // The queue must not grow: drop the excess (oldest) so audio does not drift from video
             for q in &sources {
                 let mut q = q.lock().unwrap();
                 let limit = frames * 2 + MAX_BACKLOG;
@@ -186,7 +214,7 @@ fn start_mixer(sources: Vec<Queue>, encoder: Arc<Mutex<Option<VideoEncoder>>>, s
             }
             sent += frames as u64;
         }
-        // Финал: всё, что устройства успели дописать до остановки
+        // Final: everything the devices managed to write before stopping
         let rest = sources.iter().map(|q| q.lock().unwrap().len() / 2).max().unwrap_or(0);
         if rest > 0 {
             send(&take(rest), &mut pcm);
@@ -194,7 +222,7 @@ fn start_mixer(sources: Vec<Queue>, encoder: Arc<Mutex<Option<VideoEncoder>>>, s
     })
 }
 
-// ───────────────────────── Видео ─────────────────────────
+// ───────────────────────── Video ─────────────────────────
 
 enum Sink {
     Mp4 { encoder: Arc<Mutex<Option<VideoEncoder>>> },
@@ -219,7 +247,7 @@ struct SpecCopy {
 
 struct Handler {
     flags: Flags,
-    /// Время кадров в единицах 100 нс
+    /// Frame timing in 100 ns units
     interval: i64,
     last_raw: Option<i64>,
     last_sent: Option<i64>,
@@ -256,7 +284,7 @@ impl GraphicsCaptureApiHandler for Handler {
             return Ok(());
         }
         let raw = frame.timestamp()?.Duration;
-        // Время паузы вырезаем из ролика
+        // Pause time is cut out of the clip
         if self.was_paused {
             if let Some(last) = self.last_raw {
                 self.paused_total += (raw - last - self.interval).max(0);
@@ -265,7 +293,7 @@ impl GraphicsCaptureApiHandler for Handler {
         }
         self.last_raw = Some(raw);
         let ts = raw - self.paused_total;
-        // Не чаще заданной частоты кадров
+        // No more often than the requested frame rate
         if let Some(prev) = self.last_sent {
             if ts - prev < self.interval * 9 / 10 {
                 return Ok(());
@@ -281,14 +309,14 @@ impl GraphicsCaptureApiHandler for Handler {
                 let mut guard = encoder.lock().unwrap();
                 let Some(enc) = guard.as_mut() else { return Ok(()) };
                 let res = if full {
-                    // Весь монитор: кадр уходит в кодировщик прямо на видеокарте
+                    // Whole monitor: the frame goes to the encoder directly on the GPU
                     enc.send_frame(frame)
                 } else {
                     let mut buf = frame.buffer_crop(s.x, s.y, s.x + s.w, s.y + s.h)?;
                     let pitch = buf.row_pitch() as usize;
                     let row = s.w as usize * 4;
                     let raw_buf = buf.as_raw_buffer();
-                    // Для буфера кодировщик ждёт строки снизу вверх
+                    // For a buffer the encoder expects rows bottom-up
                     self.flipped.resize(row * s.h as usize, 0);
                     for y in 0..s.h as usize {
                         let src = &raw_buf[y * pitch..y * pitch + row];
@@ -298,7 +326,7 @@ impl GraphicsCaptureApiHandler for Handler {
                     enc.send_frame_buffer(&self.flipped, ts)
                 };
                 if res.is_ok() {
-                    shared.video_started.store(true, Ordering::Relaxed); // с этого кадра идут часы звука
+                    shared.video_started.store(true, Ordering::Relaxed); // the audio clock runs from this frame
                 }
                 if let Err(e) = res {
                     eprintln!("[record] кодирование видео: {e}");
@@ -308,7 +336,7 @@ impl GraphicsCaptureApiHandler for Handler {
             }
             Sink::Gif { tx, gw, gh, frames, max_frames } => {
                 if *frames >= *max_frames {
-                    // Достигли предела длины: панель покажет обработку и вызовет стоп (один раз)
+                    // Length limit reached: the panel shows processing and triggers stop (once)
                     if *frames == *max_frames {
                         *frames += 1;
                         super::send_cmd("stop");
@@ -330,7 +358,7 @@ impl GraphicsCaptureApiHandler for Handler {
                     img
                 };
                 if let Some(tx) = tx {
-                    // Если сборщик GIF не успевает, лишний кадр пропускаем, а не копим в памяти
+                    // If the GIF writer cannot keep up, drop the extra frame instead of piling up in memory
                     if tx.try_send((small, ts / 10_000)).is_ok() {
                         *frames += 1;
                     }
@@ -341,19 +369,19 @@ impl GraphicsCaptureApiHandler for Handler {
     }
 }
 
-/// Поток сборки GIF: кадры приходят по одному, задержку кадра узнаём по времени следующего.
+/// GIF writer thread: frames arrive one by one; a frame's delay is derived from the next frame's time.
 fn start_gif_writer(rx: Receiver<(RgbaImage, i64)>, file: File, done: Arc<AtomicU32>, total: Arc<AtomicU32>) -> JoinHandle<Result<(), String>> {
     thread::spawn(move || {
         let mut enc = image::codecs::gif::GifEncoder::new_with_speed(BufWriter::new(file), 10);
         enc.set_repeat(image::codecs::gif::Repeat::Infinite).map_err(|e| e.to_string())?;
         let mut pending: Option<(RgbaImage, i64)> = None;
         let mut start: Option<i64> = None;
-        let mut written_cs: i64 = 0; // уже записанная длительность в сотых секунды
+        let mut written_cs: i64 = 0; // duration already written, in hundredths of a second
         let mut write = |img: RgbaImage, t: i64, next: i64, enc: &mut image::codecs::gif::GifEncoder<BufWriter<File>>| {
-            // Округляем границы кадров, а не длительности: иначе ошибка копится и ролик «плывёт»
+            // Round frame boundaries, not durations: otherwise the error accumulates and the clip "drifts"
             let t0 = *start.get_or_insert(t);
             let end_cs = ((next - t0) as f64 / 10.0).round() as i64;
-            let delay_cs = (end_cs - written_cs).max(2); // меньше 2 сотых многие плееры замедляют
+            let delay_cs = (end_cs - written_cs).max(2); // many players slow down below 2 hundredths
             written_cs += delay_cs;
             let frame = GifFrame::from_parts(img, 0, 0, Delay::from_numer_denom_ms((delay_cs * 10) as u32, 1));
             enc.encode_frame(frame).map_err(|e| e.to_string())?;
@@ -373,7 +401,7 @@ fn start_gif_writer(rx: Receiver<(RgbaImage, i64)>, file: File, done: Arc<Atomic
     })
 }
 
-// ───────────────────────── Движок ─────────────────────────
+// ───────────────────────── Engine ─────────────────────────
 
 pub struct Engine {
     shared: Arc<Shared>,
@@ -383,13 +411,13 @@ pub struct Engine {
     audio: Vec<JoinHandle<()>>,
     mixer: Option<JoinHandle<()>>,
     gif: Option<(JoinHandle<Result<(), String>>, Arc<AtomicU32>, Arc<AtomicU32>)>,
-    /// Что захватывать, когда придёт время go(): HMONITOR и область
+    /// What to capture when go() is called: HMONITOR and region
     pending: Option<(usize, SpecCopy)>,
 }
 
 impl Engine {
-    /// Подготовка во время отсчёта: звук, кодировщик, сборщик GIF. Кадры ещё не идут.
-    /// Второе значение: предупреждения (ключи строк), запись при этом возможна.
+    /// Preparation during the countdown: audio, encoder, GIF writer. Frames are not flowing yet.
+    /// Second value: warnings (string keys); recording is still possible with them.
     pub fn prepare(spec: &Spec) -> Result<(Self, Vec<&'static str>), String> {
         let t0 = Instant::now();
         let shared = Arc::new(Shared::default());
@@ -412,19 +440,24 @@ impl Engine {
             gif = Some((start_gif_writer(rx, file, done.clone(), total.clone()), done, total));
             Sink::Gif { tx: Some(tx), gw, gh, frames: 0, max_frames: fps * GIF_MAX_SECONDS }
         } else {
-            // Сначала открываем звук (оба устройства параллельно): от этого зависит, будет ли в MP4 звуковая дорожка
-            let wanted: Vec<(bool, &'static str)> =
-                [(spec.system_audio, true, "recNoSysAudio"), (spec.mic, false, "recNoMic")].into_iter().filter(|w| w.0).map(|w| (w.1, w.2)).collect();
+            // Open audio first (both devices in parallel): this decides whether the MP4 gets an audio track
+            let wanted: Vec<(bool, &str, &'static str)> =
+                [(spec.system_audio, true, spec.sys_device.as_str(), "recNoSysAudio"), (spec.mic, false, spec.mic_device.as_str(), "recNoMic")]
+                    .into_iter()
+                    .filter(|w| w.0)
+                    .map(|w| (w.1, w.2, w.3))
+                    .collect();
             let opened: Vec<_> = thread::scope(|sc| {
-                let jobs: Vec<_> = wanted.iter().map(|(loopback, _)| {
+                let jobs: Vec<_> = wanted.iter().map(|(loopback, id, _)| {
                     let sh = shared.clone();
                     let lb = *loopback;
-                    sc.spawn(move || start_audio_source(lb, sh))
+                    let id = id.to_string();
+                    sc.spawn(move || start_audio_source(lb, id, sh))
                 }).collect();
                 jobs.into_iter().map(|j| j.join().ok().flatten()).collect()
             });
             let mut sources = Vec::new();
-            for ((_, warn), res) in wanted.iter().zip(opened) {
+            for ((_, _, warn), res) in wanted.iter().zip(opened) {
                 match res {
                     Some((q, h)) => {
                         sources.push(q);
@@ -457,7 +490,7 @@ impl Engine {
         Ok((Self { shared, control: None, sink: Arc::new(Mutex::new(sink)), failed, audio, mixer, gif, pending }, warnings))
     }
 
-    /// Отсчёт закончился: пошли кадры.
+    /// Countdown finished: frames start flowing.
     pub fn go(&mut self) -> Result<(), String> {
         let t0 = Instant::now();
         let Some((hmonitor, spec)) = self.pending.take() else { return Err("уже запущено".into()) };
@@ -465,7 +498,7 @@ impl Engine {
         let settings = Settings::new(
             WgcMonitor::from_raw_hmonitor(hmonitor as *mut std::ffi::c_void),
             CursorCaptureSettings::WithCursor,
-            DrawBorderSettings::WithoutBorder, // без жёлтой рамки вокруг экрана
+            DrawBorderSettings::WithoutBorder, // no yellow border around the screen
             SecondaryWindowSettings::Default,
             MinimumUpdateIntervalSettings::Default,
             DirtyRegionSettings::Default,
@@ -486,7 +519,7 @@ impl Engine {
         self.shared.paused.store(false, Ordering::Relaxed);
     }
 
-    /// Останавливает захват и дописывает файл. progress: проценты сборки GIF.
+    /// Stops the capture and finalizes the file. progress: GIF assembly percentage.
     pub fn finish(mut self, progress: impl Fn(u32)) -> Result<(), String> {
         self.halt();
         let failed = self.failed.load(Ordering::Relaxed);
@@ -499,7 +532,7 @@ impl Engine {
                 }
             }
             Sink::Gif { tx, .. } => {
-                drop(tx.take()); // сборщик допишет оставшиеся кадры и завершится
+                drop(tx.take()); // the writer finishes the remaining frames and exits
                 drop(sink);
                 if let Some((handle, done, total)) = self.gif.take() {
                     while !handle.is_finished() {
@@ -521,7 +554,7 @@ impl Engine {
         Ok(())
     }
 
-    /// Остановить всё, файл не нужен.
+    /// Stop everything; the file is not needed.
     pub fn cancel(mut self) {
         self.halt();
         let mut sink = self.sink.lock().unwrap();
@@ -539,14 +572,14 @@ impl Engine {
         }
     }
 
-    /// Порядок важен: видео, затем дочитываем звук с устройств, затем смеситель отдаёт остаток
+    /// Order matters: video, then drain audio from the devices, then the mixer sends the remainder
     fn halt(&mut self) {
         self.shared.stopping.store(true, Ordering::Relaxed);
         if let Some(c) = self.control.take() {
             let _ = c.stop();
         }
         if !self.audio.is_empty() {
-            thread::sleep(Duration::from_millis(80)); // последние пакеты звука ещё в пути
+            thread::sleep(Duration::from_millis(80)); // the last audio packets are still in flight
         }
         self.shared.audio_stop.store(true, Ordering::Relaxed);
         for h in self.audio.drain(..) {

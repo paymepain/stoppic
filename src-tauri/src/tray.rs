@@ -31,6 +31,7 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         app,
         &[
             &item(app, "screenshot", &t("screenshot"), shortcuts::menu_accel(&hk.screenshot))?,
+            &item(app, "screenshotFull", &t("screenshotFull"), shortcuts::menu_accel(&hk.screenshot_full))?,
             &item(app, "record", &rec_label, shortcuts::menu_accel(&hk.record))?,
             &PredefinedMenuItem::separator(app)?,
             &item(app, "folder", &t("openFolder"), None)?,
@@ -44,13 +45,19 @@ fn build_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
 fn on_menu(app: &AppHandle, e: MenuEvent) {
     match e.id().as_ref() {
         "screenshot" => {
-            // Небольшая пауза, чтобы закрывающееся меню трея не попало в кадр
+            // Short pause so the closing tray menu doesn't end up in the frame
             std::thread::spawn(|| {
                 std::thread::sleep(Duration::from_millis(250));
                 capture::start_capture(capture::Mode::Screenshot);
             });
         }
-        "record" => record::toggle(), // меню обновится по событию смены состояния записи
+        "screenshotFull" => {
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(250));
+                capture::capture_full();
+            });
+        }
+        "record" => record::toggle(), // the menu updates on the recording state change event
         "folder" => files::open_dir(&PathBuf::from(settings::get().save_dir)),
         "settings" => settings_window::open(),
         "quit" => app.exit(0),
@@ -78,7 +85,7 @@ pub fn rebuild() {
     }
 }
 
-/// Красная иконка в трее, пока идёт запись.
+/// Red tray icon while recording.
 pub fn set_recording(on: bool) {
     if let Some(tray) = crate::app().tray_by_id(TRAY_ID) {
         let _ = tray.set_icon(Some(icon(on)));
